@@ -74,7 +74,7 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
 const chartVariants = {
@@ -82,7 +82,7 @@ const chartVariants = {
   show: {
     opacity: 1,
     scale: 1,
-    transition: { duration: 0.6, ease: 'easeOut' },
+    transition: { duration: 0.6, ease: 'easeOut' as const },
   },
 };
 
@@ -1163,7 +1163,7 @@ export function LiveMarketPage() {
                     animate={{
                       width: `${((stockInfo.price - stockInfo.low52w) / (stockInfo.high52w - stockInfo.low52w)) * 100}%`,
                     }}
-                    transition={{ duration: 1, delay: 0.3, ease: 'easeOut' }}
+                    transition={{ duration: 1, delay: 0.3, ease: 'easeOut' as const }}
                   />
                   <motion.div
                     className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg border-2 border-indigo-500"
@@ -1171,7 +1171,7 @@ export function LiveMarketPage() {
                     animate={{
                       left: `${((stockInfo.price - stockInfo.low52w) / (stockInfo.high52w - stockInfo.low52w)) * 100}%`,
                     }}
-                    transition={{ duration: 1, delay: 0.3, ease: 'easeOut' }}
+                    transition={{ duration: 1, delay: 0.3, ease: 'easeOut' as const }}
                     style={{
                       filter: 'drop-shadow(0 0 6px rgba(99, 102, 241, 0.6))',
                     }}

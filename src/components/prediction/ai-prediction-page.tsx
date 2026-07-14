@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   LineChart,
@@ -34,7 +34,7 @@ import {
   type OHLCV,
 } from '@/lib/stock-utils';
 import { GaugeChart, CircularProgress } from '@/components/shared/gauge-chart';
-import { AnimatedCounter, SectionHeader, LoadingSpinner } from '@/components/shared/animated-counter';
+import { AnimatedCounter, SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -215,7 +215,7 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
 // ─── Chart tooltip ───────────────────────────────────────────────────────
@@ -278,14 +278,8 @@ function getRiskColor(risk: string) {
 // ─── Main Component ──────────────────────────────────────────────────────
 export function AIPredictionPage() {
   const { selectedStock, setSelectedStock } = useAppStore();
-  const [isLoading, setIsLoading] = useState(true);
 
   const symbol = selectedStock.symbol;
-
-  useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 400);
-    return () => { clearTimeout(timer); setIsLoading(true); };
-  }, [symbol]);
 
   const prediction = useMemo(
     () => generatePrediction(symbol, selectedStock.price),
@@ -318,14 +312,6 @@ export function AIPredictionPage() {
       });
     }
   };
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <LoadingSpinner size={48} label="Analyzing market data..." />
-      </div>
-    );
-  }
 
   return (
     <motion.div
@@ -522,7 +508,7 @@ export function AIPredictionPage() {
                 className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
                 initial={{ width: 0 }}
                 animate={{ width: `${prediction.bullishProb}%` }}
-                transition={{ duration: 1.2, ease: 'easeOut', delay: 0.3 }}
+                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.3 }}
                 style={{ filter: 'drop-shadow(0 0 8px rgba(16, 185, 129, 0.4))' }}
               />
             </div>
@@ -540,7 +526,7 @@ export function AIPredictionPage() {
                 className="absolute inset-y-0 left-0 bg-gradient-to-r from-red-500 to-red-400 rounded-full"
                 initial={{ width: 0 }}
                 animate={{ width: `${prediction.bearishProb}%` }}
-                transition={{ duration: 1.2, ease: 'easeOut', delay: 0.4 }}
+                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.4 }}
                 style={{ filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.4))' }}
               />
             </div>

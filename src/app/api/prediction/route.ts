@@ -44,8 +44,8 @@ export async function GET(request: Request) {
   const riskLevel = volatility > 4 ? 'High' : volatility > 2.5 ? 'Medium' : 'Low';
 
   // Historical accuracy simulation
-  const predictedHistory = [];
-  const actualHistory = [];
+  const predictedHistory: number[] = [];
+  const actualHistory: number[] = [];
   for (let i = 0; i < 30; i++) {
     const base = stock.price * (0.9 + seededRandom(seed + 10 + i) * 0.15);
     actualHistory.push(parseFloat(base.toFixed(2)));

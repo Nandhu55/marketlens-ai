@@ -55,7 +55,7 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
 // ─── Custom tooltip for charts ─────────────────────────────────────────────
@@ -148,7 +148,7 @@ function FearGreedGauge({ value }: { value: number }) {
           strokeLinecap="round"
           initial={{ pathLength: 0 }}
           animate={{ pathLength: 1 }}
-          transition={{ duration: 1.5, ease: 'easeOut' }}
+          transition={{ duration: 1.5, ease: 'easeOut' as const }}
           style={{ filter: `drop-shadow(0 0 8px ${zone.color}60)` }}
         />
 

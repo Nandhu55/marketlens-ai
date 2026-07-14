@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   LineChart,
@@ -48,7 +48,7 @@ import {
   type OHLCV,
 } from '@/lib/stock-utils';
 import { CircularProgress } from '@/components/shared/gauge-chart';
-import { AnimatedCounter, SectionHeader, LoadingSpinner } from '@/components/shared/animated-counter';
+import { AnimatedCounter, SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -99,7 +99,7 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
 // ─── Chart Tooltip ────────────────────────────────────────────────────────
@@ -155,15 +155,9 @@ function SignalBadge({ signal, type }: { signal: string; type: 'bullish' | 'bear
 export function TechnicalAnalysisPage() {
   const { selectedStock, setSelectedStock } = useAppStore();
   const [timeRange, setTimeRange] = useState<TimeRange>('3M');
-  const [isLoading, setIsLoading] = useState(true);
 
   const symbol = selectedStock.symbol;
   const days = TIME_RANGES.find((r) => r.label === timeRange)?.days ?? 90;
-
-  useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 400);
-    return () => { clearTimeout(timer); setIsLoading(true); };
-  }, [symbol, timeRange]);
 
   // Generate raw OHLCV data
   const rawData = useMemo(() => generateStockData(symbol, days), [symbol, days]);
@@ -350,14 +344,6 @@ export function TechnicalAnalysisPage() {
       });
     }
   }, [setSelectedStock]);
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <LoadingSpinner size={48} label="Computing technical indicators..." />
-      </div>
-    );
-  }
 
   return (
     <motion.div
@@ -682,7 +668,7 @@ export function TechnicalAnalysisPage() {
                   className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 rounded-full"
                   initial={{ width: 0 }}
                   animate={{ width: `${Math.min(100, (currentVolume / avgVolume) * 50)}%` }}
-                  transition={{ duration: 0.8, ease: 'easeOut' }}
+                  transition={{ duration: 0.8, ease: 'easeOut' as const }}
                 />
               </div>
               <span className={cn(

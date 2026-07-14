@@ -74,7 +74,7 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
 // ─── Report type config ──────────────────────────────────────────────────────
@@ -334,7 +334,7 @@ RSI (14): ${reportData.rsi}
           <motion.div
             className="w-12 h-12 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full"
             animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}
           />
           <p className="text-slate-400 text-sm">Generating report...</p>
         </motion.div>
@@ -478,7 +478,7 @@ RSI (14): ${reportData.rsi}
                             <motion.div
                               initial={{ width: 0 }}
                               animate={{ width: `${bar.value}%` }}
-                              transition={{ duration: 0.8, ease: 'easeOut' }}
+                              transition={{ duration: 0.8, ease: 'easeOut' as const }}
                               className="h-full rounded-full"
                               style={{ background: bar.color }}
                             />
