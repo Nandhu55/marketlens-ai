@@ -5,8 +5,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { useAppStore, type PageId } from '@/lib/store';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Clock, Wifi } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Clock, Wifi, Radio } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
 import { LoadingSpinner } from '@/components/shared/animated-counter';
 
 const DashboardPage = dynamic(() => import('@/components/dashboard/dashboard-page').then(m => ({ default: m.DashboardPage })), { loading: () => <PageLoading />, ssr: false });
@@ -43,6 +43,7 @@ function PageLoading() {
 
 function MarketClock() {
   const [time, setTime] = useState('');
+  const { isLive } = useAppStore();
 
   useEffect(() => {
     const update = () => {
@@ -70,10 +71,18 @@ function MarketClock() {
 
   return (
     <div className="flex items-center gap-4 text-xs">
-      <div className="flex items-center gap-1.5 text-slate-500">
-        <Wifi className="w-3 h-3" />
-        <span>Live</span>
-      </div>
+      {isLive ? (
+        <div className="flex items-center gap-1.5 text-emerald-400">
+          <Radio className="w-3 h-3 animate-pulse" />
+          <span className="font-semibold">LIVE DATA</span>
+          <span className="text-[9px] text-slate-500 font-normal">via Web AI</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 text-slate-500">
+          <Wifi className="w-3 h-3" />
+          <span>Connecting...</span>
+        </div>
+      )}
       <div className="flex items-center gap-1.5 text-slate-500">
         <Clock className="w-3 h-3" />
         <span>NYSE {time}</span>
@@ -90,8 +99,37 @@ function MarketClock() {
 }
 
 export default function Home() {
-  const { activePage } = useAppStore();
+  const { activePage, setRealQuotes, setMarketOverview, setIsLive, isLive } = useAppStore();
   const ActiveComponent = pageComponents[activePage];
+
+  // Fetch real-time market data on mount
+  const fetchMarketData = useCallback(async () => {
+    try {
+      const res = await fetch('/api/market-overview');
+      const data = await res.json();
+      if (data.success && data.hasRealData) {
+        setRealQuotes(data.quotes || {});
+        if (data.overview) {
+          setMarketOverview({
+            fearGreedIndex: data.overview.fearGreedIndex,
+            marketTrend: data.overview.marketTrend,
+            topGainers: data.overview.topGainers,
+            topLosers: data.overview.topLosers,
+          });
+        }
+        setIsLive(true);
+      }
+    } catch (err) {
+      console.error('Market data fetch failed:', err);
+    }
+  }, [setRealQuotes, setMarketOverview, setIsLive]);
+
+  useEffect(() => {
+    fetchMarketData();
+    // Refresh every 5 minutes
+    const interval = setInterval(fetchMarketData, 300_000);
+    return () => clearInterval(interval);
+  }, [fetchMarketData]);
 
   return (
     <div className="flex min-h-screen">
@@ -131,7 +169,7 @@ export default function Home() {
         <footer className="h-10 border-t border-white/5 flex items-center justify-between px-6 text-[11px] text-slate-600 shrink-0 bg-[#0a0e1a]/80 backdrop-blur-xl">
           <span>&copy; 2025 MarketLens AI &mdash; Intelligent Stock Analytics</span>
           <span className="flex items-center gap-1">
-            Powered by LSTM + FinBERT
+            {isLive ? 'Real-time via Web AI + LLM' : 'Powered by LSTM + FinBERT'}
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
           </span>
         </footer>

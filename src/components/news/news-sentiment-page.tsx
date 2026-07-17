@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PieChart,
@@ -297,21 +297,77 @@ const itemVariants = {
 export function NewsSentimentPage() {
   const { selectedStock } = useAppStore();
   const [stockFilter, setStockFilter] = useState(selectedStock.symbol);
+  const [isLoading, setIsLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'real' | 'fallback' | 'local'>('local');
+  const [apiSummary, setApiSummary] = useState<{
+    overallScore: number;
+    positivePct: number;
+    negativePct: number;
+    neutralPct: number;
+    positiveCount: number;
+    negativeCount: number;
+    neutralCount: number;
+    trending: string[];
+  } | null>(null);
 
-  const articles = useMemo(() => generateArticles(stockFilter), [stockFilter]);
+  // Fetch real news from API
+  const [apiArticles, setApiArticles] = useState<Array<NewsArticle>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch(`/api/sentiment?symbol=${stockFilter}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setDataSource(data.dataSource || 'local');
+        setApiSummary(data.summary || null);
+
+        if (data.articles && data.articles.length > 0) {
+          const mapped: NewsArticle[] = data.articles.map((a: Record<string, unknown>, i: number) => ({
+            id: i,
+            headline: a.headline as string || '',
+            source: a.source as string || '',
+            time: a.time as string || '',
+            sentiment: (a.sentiment as Sentiment) || 'neutral',
+            positivePercent: (a.positivePct as number) || (a.positivePercent as number) || 33,
+            negativePercent: (a.negativePct as number) || (a.negativePercent as number) || 33,
+            neutralPercent: (a.neutralPct as number) || (a.neutralPercent as number) || 34,
+            summary: (a.snippet as string) || '',
+          }));
+          setApiArticles(mapped);
+        }
+      })
+      .catch(() => setDataSource('local'))
+      .finally(() => { if (!cancelled) setIsLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [stockFilter]);
+
+  // Use API articles if available, else fall back to local
+  const articles = apiArticles.length > 0 ? apiArticles : generateArticles(stockFilter);
   const stock = STOCKS[stockFilter] || STOCKS.AAPL;
 
   const sentimentCounts = useMemo(() => {
+    if (apiSummary && dataSource !== 'local') {
+      return {
+        positive: apiSummary.positiveCount,
+        negative: apiSummary.negativeCount,
+        neutral: apiSummary.neutralCount,
+        total: apiSummary.positiveCount + apiSummary.negativeCount + apiSummary.neutralCount,
+      };
+    }
     const pos = articles.filter((a) => a.sentiment === 'positive').length;
     const neg = articles.filter((a) => a.sentiment === 'negative').length;
     const neu = articles.filter((a) => a.sentiment === 'neutral').length;
     return { positive: pos, negative: neg, neutral: neu, total: articles.length };
-  }, [articles]);
+  }, [articles, apiSummary, dataSource]);
 
   const aggregateScore = useMemo(() => {
+    if (apiSummary && dataSource !== 'local') return apiSummary.overallScore;
     const { positive, total } = sentimentCounts;
     return Math.round((positive / total) * 100);
-  }, [sentimentCounts]);
+  }, [sentimentCounts, apiSummary, dataSource]);
 
   const pieData = useMemo(
     () => [
@@ -336,7 +392,8 @@ export function NewsSentimentPage() {
     >
       <SectionHeader
         title="News Sentiment"
-        subtitle={`AI-powered sentiment analysis for ${stock.name} (${stockFilter})`}
+        subtitle={`AI-powered sentiment analysis for ${stock.name} (${stockFilter})${dataSource === 'real' ? '' : ''}`}
+        badge={dataSource === 'real' ? { label: 'AI ANALYZED', color: 'bg-emerald-500/15 text-emerald-400' } : undefined}
         action={
           <Select value={stockFilter} onValueChange={setStockFilter}>
             <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
@@ -444,7 +501,7 @@ export function NewsSentimentPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 pt-2">
-            {trendingTopics.map((topic, i) => (
+            {(apiSummary?.trending?.length ? apiSummary.trending : trendingTopics).map((topic, i) => (
               <motion.div
                 key={topic}
                 initial={{ opacity: 0, x: 20 }}

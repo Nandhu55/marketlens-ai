@@ -99,13 +99,21 @@ interface SectionHeaderProps {
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
+  badge?: { label: string; color: string };
 }
 
-export function SectionHeader({ title, subtitle, action }: SectionHeaderProps) {
+export function SectionHeader({ title, subtitle, action, badge }: SectionHeaderProps) {
   return (
     <div className="flex items-center justify-between mb-6">
       <div>
-        <h2 className="text-xl font-bold text-white">{title}</h2>
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-xl font-bold text-white">{title}</h2>
+          {badge && (
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${badge.color}`}>
+              {badge.label}
+            </span>
+          )}
+        </div>
         {subtitle && <p className="text-sm text-slate-400 mt-0.5">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}

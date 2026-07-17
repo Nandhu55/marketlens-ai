@@ -1,75 +1,108 @@
 import { NextResponse } from 'next/server';
-import { STOCKS, generateStockData, calculateRSI, calculateMACD } from '@/lib/stock-utils';
-
-function seededRandom(seed: number) {
-  const x = Math.sin(seed) * 10000;
-  return x - Math.floor(x);
-}
+import { STOCKS, generateStockData, calculateRSI } from '@/lib/stock-utils';
+import { fetchRealPrediction, fetchRealStockQuote } from '@/lib/ai-service';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol') || 'AAPL';
 
-  const stock = STOCKS[symbol.toUpperCase()];
+  const stockKey = symbol.toUpperCase();
+  const stock = STOCKS[stockKey];
   if (!stock) {
     return NextResponse.json({ error: 'Stock not found' }, { status: 404 });
   }
 
-  // Deterministic values based on symbol
-  let hash = 0;
-  for (let i = 0; i < symbol.length; i++) {
-    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
-  }
-  const seed = Math.abs(hash);
+  // Try to get real quote for accurate current price
+  const realQuote = await fetchRealStockQuote(stockKey);
+  const currentPrice = realQuote?.price || stock.price;
 
-  const data = generateStockData(symbol, 60);
+  // Calculate RSI for context
+  const data = generateStockData(stockKey, 60);
   const closes = data.map((d) => d.close);
   const rsi = calculateRSI(closes, 14);
   const lastRSI = rsi[rsi.length - 1] || 50;
+
+  // Try to get real AI prediction
+  const realPrediction = await fetchRealPrediction(stockKey, currentPrice, lastRSI);
+
+  if (realPrediction) {
+    return NextResponse.json({
+      symbol: stockKey,
+      stock: realQuote
+        ? {
+            ...stock,
+            price: realQuote.price,
+            change: realQuote.change || stock.change,
+            changePercent: realQuote.changePercent || stock.changePercent,
+          }
+        : stock,
+      dataSource: 'real',
+      prediction: {
+        bullishProbability: realPrediction.bullishProbability,
+        bearishProbability: realPrediction.bearishProbability,
+        volatility: realPrediction.volatility,
+        predictedPrice: realPrediction.predictedPrice,
+        upperBound: realPrediction.upperBound,
+        lowerBound: realPrediction.lowerBound,
+        confidence: realPrediction.confidence,
+        riskLevel: realPrediction.riskLevel,
+        recommendation: realPrediction.recommendation,
+      },
+      modelPerformance: realPrediction.modelPerformance,
+      analysis: realPrediction.analysis,
+      predictedHistory: realPrediction.predictedHistory,
+      actualHistory: realPrediction.actualHistory,
+    });
+  }
+
+  // Fallback: generate prediction locally (no LLM)
+  let hash = 0;
+  for (let i = 0; i < stockKey.length; i++) {
+    hash = ((hash << 5) - hash + stockKey.charCodeAt(i)) | 0;
+  }
+  const seed = Math.abs(hash);
+  const seededRandom = (s: number) => {
+    const x = Math.sin(s) * 10000;
+    return x - Math.floor(x);
+  };
 
   const bullishProb = Math.round(40 + seededRandom(seed + 1) * 45);
   const bearishProb = 100 - bullishProb;
   const confidence = Math.round(72 + seededRandom(seed + 2) * 18);
   const volatility = parseFloat((1.5 + seededRandom(seed + 3) * 4).toFixed(2));
-
   const isBullish = bullishProb > 55;
   const isBearish = bearishProb > 55;
   const recommendation = isBullish ? 'BUY' : isBearish ? 'SELL' : 'HOLD';
+  const priceRange = currentPrice * 0.03;
+  const predictedPrice = parseFloat((currentPrice * (isBullish ? 1.02 : isBearish ? 0.98 : 1.0)).toFixed(2));
 
-  const priceRange = stock.price * 0.03;
-  const predictedPrice = parseFloat((stock.price * (isBullish ? 1.02 : isBearish ? 0.98 : 1.0)).toFixed(2));
-  const upperBound = parseFloat((predictedPrice + priceRange).toFixed(2));
-  const lowerBound = parseFloat((predictedPrice - priceRange).toFixed(2));
-
-  const riskLevel = volatility > 4 ? 'High' : volatility > 2.5 ? 'Medium' : 'Low';
-
-  // Historical accuracy simulation
   const predictedHistory: number[] = [];
   const actualHistory: number[] = [];
   for (let i = 0; i < 30; i++) {
-    const base = stock.price * (0.9 + seededRandom(seed + 10 + i) * 0.15);
+    const base = currentPrice * (0.9 + seededRandom(seed + 10 + i) * 0.15);
     actualHistory.push(parseFloat(base.toFixed(2)));
     predictedHistory.push(parseFloat((base * (0.98 + seededRandom(seed + 40 + i) * 0.04)).toFixed(2)));
   }
 
   const analysis = isBullish
-    ? `Technical indicators suggest ${symbol} is in a bullish phase. The RSI at ${lastRSI.toFixed(1)} indicates ${lastRSI > 70 ? 'overbought conditions, suggesting potential short-term consolidation' : 'room for further upside momentum'}. Moving averages show a bullish alignment with the shorter-term MA trading above the longer-term MA. Volume trends support the current upward move, and MACD histogram shows increasing positive momentum. Key resistance level at $${(stock.price * 1.05).toFixed(2)} and support at $${(stock.price * 0.97).toFixed(2)}.`
+    ? `Technical indicators suggest ${stockKey} is in a bullish phase. RSI at ${lastRSI.toFixed(1)} indicates ${lastRSI > 70 ? 'overbought conditions' : 'room for further upside'}. Moving averages show bullish alignment. (Fallback analysis - AI service unavailable)`
     : isBearish
-    ? `Technical analysis indicates ${symbol} is showing bearish signals. RSI at ${lastRSI.toFixed(1)} suggests ${lastRSI < 30 ? 'oversold conditions, which could present a buying opportunity' : 'weakening momentum with potential for further decline'}. The MACD has crossed below the signal line, confirming bearish momentum. Support levels to watch at $${(stock.price * 0.95).toFixed(2)} and $${(stock.price * 0.92).toFixed(2)}. Risk-reward ratio favors caution at current levels.`
-    : `${symbol} is currently in a consolidation phase with mixed technical signals. RSI at ${lastRSI.toFixed(1)} is in neutral territory. Both bullish and bearish forces are balanced, suggesting a breakout in either direction is possible. Key levels to watch: resistance at $${(stock.price * 1.03).toFixed(2)} and support at $${(stock.price * 0.97).toFixed(2)}. Recommend waiting for clearer directional signals before taking position.`;
+    ? `Technical analysis indicates ${stockKey} shows bearish signals. RSI at ${lastRSI.toFixed(1)} suggests ${lastRSI < 30 ? 'oversold conditions' : 'weakening momentum'}. MACD confirms bearish momentum. (Fallback analysis - AI service unavailable)`
+    : `${stockKey} is in a consolidation phase with mixed signals. RSI at ${lastRSI.toFixed(1)} is neutral. A breakout in either direction is possible. (Fallback analysis - AI service unavailable)`;
 
   return NextResponse.json({
-    symbol,
+    symbol: stockKey,
     stock,
+    dataSource: 'fallback',
     prediction: {
       bullishProbability: bullishProb,
       bearishProbability: bearishProb,
       volatility,
       predictedPrice,
-      upperBound,
-      lowerBound,
+      upperBound: parseFloat((predictedPrice + priceRange).toFixed(2)),
+      lowerBound: parseFloat((predictedPrice - priceRange).toFixed(2)),
       confidence,
-      riskLevel,
+      riskLevel: volatility > 4 ? 'High' : volatility > 2.5 ? 'Medium' : 'Low',
       recommendation,
     },
     modelPerformance: {

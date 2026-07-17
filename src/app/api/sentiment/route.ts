@@ -1,69 +1,102 @@
 import { NextResponse } from 'next/server';
-
-// Deterministic sentiment analysis based on stock symbol
-function getSentimentForSymbol(symbol: string) {
-  let hash = 0;
-  for (let i = 0; i < symbol.length; i++) {
-    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
-  }
-  const seed = Math.abs(hash);
-
-  const articles = [
-    { headline: `${symbol} Reports Strong Quarterly Earnings, Beating Analyst Estimates`, source: 'Bloomberg', sentiment: 'positive' as const },
-    { headline: `${symbol} Announces Major Strategic Partnership in AI Sector`, source: 'Reuters', sentiment: 'positive' as const },
-    { headline: `Analysts Upgrade ${symbol} Price Target Amid Growth Momentum`, source: 'CNBC', sentiment: 'positive' as const },
-    { headline: `${symbol} Faces Regulatory Scrutiny Over Data Privacy Concerns`, source: 'WSJ', sentiment: 'negative' as const },
-    { headline: `${symbol} Expands Market Share in Key International Markets`, source: 'Financial Times', sentiment: 'positive' as const },
-    { headline: `Supply Chain Disruptions Could Impact ${symbol} Revenue Forecast`, source: 'Bloomberg', sentiment: 'negative' as const },
-    { headline: `${symbol} Launches Next-Generation Product Line, Consumer Response Positive`, source: 'Reuters', sentiment: 'positive' as const },
-    { headline: `${symbol} CEO Discusses Long-Term Vision at Investor Conference`, source: 'CNBC', sentiment: 'neutral' as const },
-    { headline: `Institutional Investors Increase Holdings in ${symbol} Stock`, source: 'WSJ', sentiment: 'positive' as const },
-    { headline: `${symbol} Competitor Gains Ground with New Technology Offering`, source: 'Financial Times', sentiment: 'negative' as const },
-    { headline: `Federal Reserve Policy May Create Headwinds for ${symbol} Sector`, source: 'Bloomberg', sentiment: 'neutral' as const },
-    { headline: `${symbol} R&D Investment Reaches Record High, Innovation Pipeline Strong`, source: 'Reuters', sentiment: 'positive' as const },
-  ];
-
-  return articles.map((article, i) => {
-    const s = (seed + i * 137) % 100;
-    const positive = article.sentiment === 'positive' ? 55 + (s % 30) : 10 + (s % 25);
-    const negative = article.sentiment === 'negative' ? 50 + (s % 35) : 5 + (s % 20);
-    const neutral = 100 - positive - negative;
-
-    return {
-      ...article,
-      time: `${(i * 2 + 1) % 24}h ago`,
-      positivePct: positive,
-      negativePct: negative,
-      neutralPct: Math.max(neutral, 0),
-    };
-  });
-}
+import { fetchRealNews } from '@/lib/ai-service';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol') || 'AAPL';
 
-  const articles = getSentimentForSymbol(symbol);
-  const totalPositive = articles.reduce((sum, a) => sum + a.positivePct, 0) / articles.length;
-  const totalNegative = articles.reduce((sum, a) => sum + a.negativePct, 0) / articles.length;
-  const totalNeutral = 100 - totalPositive - totalNegative;
+  // Try to fetch real news with AI sentiment analysis
+  const realData = await fetchRealNews(symbol.toUpperCase());
 
-  const positiveCount = articles.filter((a) => a.sentiment === 'positive').length;
-  const negativeCount = articles.filter((a) => a.sentiment === 'negative').length;
-  const neutralCount = articles.filter((a) => a.sentiment === 'neutral').length;
+  if (realData) {
+    return NextResponse.json({
+      symbol: symbol.toUpperCase(),
+      dataSource: 'real',
+      articles: realData.articles.map((a) => ({
+        headline: a.title,
+        source: a.source,
+        url: a.url,
+        time: a.date,
+        sentiment: a.sentiment,
+        positivePct: a.positivePct,
+        negativePct: a.negativePct,
+        neutralPct: a.neutralPct,
+        snippet: a.snippet,
+      })),
+      summary: realData.summary,
+    });
+  }
 
+  // Fallback to static data if real fetch fails
   return NextResponse.json({
-    symbol,
-    articles,
+    symbol: symbol.toUpperCase(),
+    dataSource: 'fallback',
+    articles: [
+      {
+        headline: `${symbol} Reports Strong Quarterly Earnings, Beating Analyst Estimates`,
+        source: 'Bloomberg',
+        url: '#',
+        time: '2h ago',
+        sentiment: 'positive' as const,
+        positivePct: 72,
+        negativePct: 12,
+        neutralPct: 16,
+        snippet: 'The company exceeded Wall Street expectations...',
+      },
+      {
+        headline: `${symbol} Announces Major Strategic Partnership in AI Sector`,
+        source: 'Reuters',
+        url: '#',
+        time: '5h ago',
+        sentiment: 'positive' as const,
+        positivePct: 68,
+        negativePct: 14,
+        neutralPct: 18,
+        snippet: 'A new partnership aims to accelerate AI adoption...',
+      },
+      {
+        headline: `${symbol} Faces Regulatory Scrutiny Over Market Practices`,
+        source: 'WSJ',
+        url: '#',
+        time: '8h ago',
+        sentiment: 'negative' as const,
+        positivePct: 18,
+        negativePct: 65,
+        neutralPct: 17,
+        snippet: 'Regulators are examining recent trading patterns...',
+      },
+      {
+        headline: `Analysts Maintain Hold Rating on ${symbol} Amid Market Uncertainty`,
+        source: 'CNBC',
+        url: '#',
+        time: '12h ago',
+        sentiment: 'neutral' as const,
+        positivePct: 35,
+        negativePct: 30,
+        neutralPct: 35,
+        snippet: 'Market conditions warrant a cautious approach...',
+      },
+      {
+        headline: `${symbol} Expands Market Share in Key Growth Segments`,
+        source: 'Financial Times',
+        url: '#',
+        time: '1d ago',
+        sentiment: 'positive' as const,
+        positivePct: 70,
+        negativePct: 10,
+        neutralPct: 20,
+        snippet: 'Strong quarterly results highlight growth trajectory...',
+      },
+    ],
     summary: {
-      overallScore: Math.round(50 + (totalPositive - totalNegative) * 0.5),
-      positivePct: Math.round(totalPositive),
-      negativePct: Math.round(totalNegative),
-      neutralPct: Math.round(totalNeutral),
-      positiveCount,
-      negativeCount,
-      neutralCount,
-      trending: ['AI Integration', 'Earnings Growth', 'Market Expansion', 'Innovation Pipeline'],
+      overallScore: 58,
+      positivePct: 53,
+      negativePct: 26,
+      neutralPct: 21,
+      positiveCount: 3,
+      negativeCount: 1,
+      neutralCount: 1,
+      trending: ['Earnings', 'AI Partnership', 'Regulation', 'Market Expansion'],
     },
   });
 }

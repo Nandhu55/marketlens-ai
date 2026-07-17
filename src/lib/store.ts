@@ -22,6 +22,22 @@ interface StockState {
   marketCap: number;
 }
 
+export interface RealQuote {
+  price: number;
+  change: number;
+  changePercent: number;
+  volume: number;
+  source: string;
+  fetchedAt: string;
+}
+
+export interface MarketOverviewData {
+  fearGreedIndex: number;
+  marketTrend: string;
+  topGainers: Array<{ symbol: string; change: number }>;
+  topLosers: Array<{ symbol: string; change: number }>;
+}
+
 interface AppState {
   activePage: PageId;
   setActivePage: (page: PageId) => void;
@@ -36,6 +52,13 @@ interface AppState {
   watchlist: string[];
   addToWatchlist: (symbol: string) => void;
   removeFromWatchlist: (symbol: string) => void;
+  // Real-time data
+  realQuotes: Record<string, RealQuote>;
+  setRealQuotes: (quotes: Record<string, RealQuote>) => void;
+  marketOverview: MarketOverviewData | null;
+  setMarketOverview: (overview: MarketOverviewData | null) => void;
+  isLive: boolean;
+  setIsLive: (live: boolean) => void;
 }
 
 const defaultStock: StockState = {
@@ -73,4 +96,11 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       watchlist: state.watchlist.filter((s) => s !== symbol),
     })),
+  // Real-time data
+  realQuotes: {},
+  setRealQuotes: (quotes) => set({ realQuotes: quotes }),
+  marketOverview: null,
+  setMarketOverview: (overview) => set({ marketOverview: overview }),
+  isLive: false,
+  setIsLive: (live) => set({ isLive: live }),
 }));

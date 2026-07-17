@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   LineChart,
@@ -280,21 +280,73 @@ export function AIPredictionPage() {
   const { selectedStock, setSelectedStock } = useAppStore();
 
   const symbol = selectedStock.symbol;
+  const [isLoading, setIsLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'real' | 'fallback' | 'local'>('local');
+  const [realAnalysis, setRealAnalysis] = useState<string | null>(null);
 
-  const prediction = useMemo(
-    () => generatePrediction(symbol, selectedStock.price),
-    [symbol, selectedStock.price]
-  );
+  // Fetch real AI prediction from API
+  const [apiData, setApiData] = useState<Record<string, unknown> | null>(null);
 
-  const accuracyData = useMemo(
-    () => generateAccuracyData(symbol, selectedStock.price),
-    [symbol, selectedStock.price]
-  );
+  useEffect(() => {
+    let cancelled = false;
 
-  const analysisTexts = useMemo(
-    () => generateAnalysis(symbol, prediction),
-    [symbol, prediction]
-  );
+    fetch(`/api/prediction?symbol=${symbol}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setDataSource(data.dataSource || 'local');
+        setApiData(data);
+        if (data.analysis) setRealAnalysis(data.analysis);
+      })
+      .catch(() => setDataSource('local'))
+      .finally(() => { if (!cancelled) setIsLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [symbol]);
+
+  const prediction = useMemo(() => {
+    if (apiData?.prediction) {
+      const p = apiData.prediction as Record<string, unknown>;
+      return {
+        bullishProb: (p.bullishProbability as number) || 50,
+        bearishProb: (p.bearishProbability as number) || 50,
+        volatilityScore: (p.volatility as number) || 30,
+        confidenceScore: (p.confidence as number) || 75,
+        upperBound: (p.upperBound as number) || 0,
+        lowerBound: (p.lowerBound as number) || 0,
+        recommendation: (p.recommendation as 'BUY' | 'HOLD' | 'SELL') || 'HOLD',
+        riskLevel: (p.riskLevel as 'Low' | 'Medium' | 'High' | 'Extreme') || 'Medium',
+        accuracy: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.accuracy || 85)),
+        precision: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.precision || 83)),
+        recall: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.recall || 86)),
+        f1Score: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.f1Score || 84)),
+        rmse: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.rmse || 2.0)),
+        mae: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.mae || 1.5)),
+      };
+    }
+    return generatePrediction(symbol, selectedStock.price);
+  }, [symbol, selectedStock.price, apiData]);
+
+  const accuracyData = useMemo(() => {
+    if (apiData?.actualHistory && apiData?.predictedHistory) {
+      const actual = apiData.actualHistory as number[];
+      const predicted = apiData.predictedHistory as number[];
+      const len = Math.min(actual.length, predicted.length);
+      return Array.from({ length: len }, (_, i) => ({
+        date: `Day ${i + 1}`,
+        actual: actual[i],
+        predicted: predicted[i],
+      }));
+    }
+    return generateAccuracyData(symbol, selectedStock.price);
+  }, [symbol, selectedStock.price, apiData]);
+
+  const analysisTexts = useMemo(() => {
+    if (realAnalysis && dataSource !== 'local') {
+      return realAnalysis.split(/\n\n|\.(?=\s)/).filter((t) => t.trim().length > 10).map((t) => t.trim());
+    }
+    return generateAnalysis(symbol, prediction);
+  }, [symbol, prediction, realAnalysis, dataSource]);
 
   const recStyle = useMemo(() => getRecommendationStyle(prediction.recommendation), [prediction.recommendation]);
 
@@ -329,6 +381,9 @@ export function AIPredictionPage() {
           <div>
             <h1 className="text-2xl font-bold text-white">AI Prediction</h1>
             <p className="text-sm text-slate-400">Machine learning-powered price forecasts</p>
+            {dataSource === 'real' && (
+              <Badge className="text-[10px] bg-emerald-500/15 text-emerald-400 border-0 mt-1">AI POWERED</Badge>
+            )}
           </div>
         </div>
         <Select value={symbol} onValueChange={handleStockChange}>
@@ -541,7 +596,7 @@ export function AIPredictionPage() {
           AI Analysis Report
           <Badge variant="outline" className="ml-auto text-[10px] border-purple-500/30 text-purple-400">
             <Zap className="w-3 h-3 mr-1" />
-            Generated
+            {dataSource === 'real' ? 'Live AI' : 'Generated'}
           </Badge>
         </h3>
         <div className="space-y-4 max-h-96 overflow-y-auto pr-2">

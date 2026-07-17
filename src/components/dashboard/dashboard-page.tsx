@@ -341,7 +341,7 @@ function DashboardSkeleton() {
 
 // ─── Main Dashboard Page ───────────────────────────────────────────────────
 export function DashboardPage() {
-  const { selectedStock, watchlist } = useAppStore();
+  const { selectedStock, watchlist, realQuotes, marketOverview, isLive } = useAppStore();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -358,12 +358,24 @@ export function DashboardPage() {
     }));
   }, [selectedStock.symbol]);
 
-  // Memoize ticker data for all stocks
-  const tickerStocks = useMemo(() => Object.values(STOCKS), []);
+  // Memoize ticker data for all stocks — merge real quotes
+  const tickerStocks = useMemo(() => {
+    return Object.values(STOCKS).map((s) => {
+      const real = realQuotes[s.symbol];
+      if (real && real.price > 0) {
+        return { ...s, price: real.price, change: real.change, changePercent: real.changePercent, volume: real.volume };
+      }
+      return s;
+    });
+  }, [realQuotes]);
 
-  // Compute derived KPI values
+  // Compute derived KPI values — use real quotes when available
   const kpiData = useMemo(() => {
-    const stock = STOCKS[selectedStock.symbol] || STOCKS.AAPL;
+    const baseStock = STOCKS[selectedStock.symbol] || STOCKS.AAPL;
+    const real = realQuotes[selectedStock.symbol];
+    const stock = real && real.price > 0
+      ? { ...baseStock, price: real.price, change: real.change, changePercent: real.changePercent, volume: real.volume }
+      : baseStock;
     // Simulated scores
     const volatilityScore = Math.round(30 + Math.abs(stock.changePercent) * 8 + (stock.volume / stock.avgVolume) * 15);
     const sentimentScore = Math.round(55 + (stock.changePercent > 0 ? stock.changePercent * 4 : stock.changePercent * 3));
@@ -381,23 +393,34 @@ export function DashboardPage() {
       sentimentScore: Math.max(0, Math.min(100, sentimentScore)),
       confidenceScore: Math.max(0, Math.min(100, confidenceScore)),
       riskLevel: Math.max(0, Math.min(100, riskLevel)),
+      isReal: !!(real && real.price > 0),
     };
-  }, [selectedStock.symbol]);
+  }, [selectedStock.symbol, realQuotes]);
 
-  // Top gainers / losers
+  // Top gainers / losers — use real data when available
   const { topGainers, topLosers } = useMemo(() => {
-    const sorted = Object.values(STOCKS).sort((a, b) => b.changePercent - a.changePercent);
+    const stocks = Object.values(STOCKS).map((s) => {
+      const real = realQuotes[s.symbol];
+      if (real && real.price > 0) {
+        return { ...s, price: real.price, changePercent: real.changePercent };
+      }
+      return s;
+    });
+    const sorted = stocks.sort((a, b) => b.changePercent - a.changePercent);
     return {
       topGainers: sorted.slice(0, 3),
       topLosers: sorted.slice(-3).reverse(),
     };
-  }, []);
+  }, [realQuotes]);
 
-  // Simulated fear & greed value
+  // Fear & Greed — use real market overview when available
   const fearGreedValue = useMemo(() => {
+    if (marketOverview && marketOverview.fearGreedIndex > 0) {
+      return marketOverview.fearGreedIndex;
+    }
     const avgChange = Object.values(STOCKS).reduce((s, st) => s + st.changePercent, 0) / Object.keys(STOCKS).length;
     return Math.round(50 + avgChange * 8 + (Math.random() * 6 - 3));
-  }, []);
+  }, [marketOverview]);
 
   // AI Insights — realistic per selected stock
   const insights = useMemo(() => {
@@ -475,7 +498,7 @@ export function DashboardPage() {
           iconColor="text-cyan-400"
           glowColor="glow-cyan"
           index={0}
-          subtitle={selectedStock.symbol}
+          subtitle={kpiData.isReal ? `${selectedStock.symbol} · LIVE` : selectedStock.symbol}
         />
         <KPICard
           title="Today's Change"
