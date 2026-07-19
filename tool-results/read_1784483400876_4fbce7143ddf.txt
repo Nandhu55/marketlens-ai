@@ -1,0 +1,610 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState, useEffect } from 'react';
+     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→import {
+     6→  PieChart,
+     7→  Pie,
+     8→  Cell,
+     9→  ResponsiveContainer,
+    10→  Tooltip,
+    11→} from 'recharts';
+    12→import {
+    13→  Newspaper,
+    14→  TrendingUp,
+    15→  TrendingDown,
+    16→  Minus,
+    17→  BarChart3,
+    18→  Sparkles,
+    19→  Hash,
+    20→} from 'lucide-react';
+    21→import { useAppStore } from '@/lib/store';
+    22→import { STOCKS, formatNumber } from '@/lib/stock-utils';
+    23→import { GaugeChart } from '@/components/shared/gauge-chart';
+    24→import { SectionHeader } from '@/components/shared/animated-counter';
+    25→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+    26→import { Badge } from '@/components/ui/badge';
+    27→import { Button } from '@/components/ui/button';
+    28→import {
+    29→  Select,
+    30→  SelectContent,
+    31→  SelectItem,
+    32→  SelectTrigger,
+    33→  SelectValue,
+    34→} from '@/components/ui/select';
+    35→import { ScrollArea } from '@/components/ui/scroll-area';
+    36→
+    37→// ─── Types ────────────────────────────────────────────────────────────────────
+    38→type Sentiment = 'positive' | 'negative' | 'neutral';
+    39→
+    40→interface NewsArticle {
+    41→  id: number;
+    42→  headline: string;
+    43→  source: string;
+    44→  time: string;
+    45→  sentiment: Sentiment;
+    46→  positivePercent: number;
+    47→  negativePercent: number;
+    48→  neutralPercent: number;
+    49→  summary: string;
+    50→}
+    51→
+    52→// ─── Deterministic news generator ─────────────────────────────────────────────
+    53→const SOURCES = ['Bloomberg', 'Reuters', 'CNBC', 'WSJ', 'Financial Times'];
+    54→
+    55→function seededRandom(seed: number) {
+    56→  let x = Math.sin(seed) * 10000;
+    57→  return x - Math.floor(x);
+    58→}
+    59→
+    60→const HEADLINES_BY_STOCK: Record<string, string[]> = {
+    61→  AAPL: [
+    62→    'Apple Reports Record Services Revenue in Q4 Earnings',
+    63→    'iPhone 16 Pro Demand Exceeds Wall Street Expectations',
+    64→    'Apple Vision Pro Adoption Accelerates in Enterprise Sector',
+    65→    'Apple Expands AI Features Across Entire Product Lineup',
+    66→    'Apple Stock Buyback Program Reaches $100 Billion Milestone',
+    67→    'China iPhone Sales Show Signs of Recovery in Latest Quarter',
+    68→    'Apple Car Project Cancellation Frees Up R&D Resources',
+    69→    'Apple Music Subscribers Surpass 110 Million Worldwide',
+    70→    'Tim Cook Signals Strong Holiday Quarter Guidance',
+    71→    'Apple Pay Transaction Volume Grows 25% Year Over Year',
+    72→    'Regulatory Pressure on App Store Fees Intensifies in EU',
+    73→    'Apple Supply Chain Diversification Strategy Shows Results',
+    74→  ],
+    75→  TSLA: [
+    76→    'Tesla Delivers Record Number of Vehicles in Q3',
+    77→    'Elon Musk Unveils Next-Generation Autonomous Driving Platform',
+    78→    'Tesla Cybertruck Production Ramps Up to Full Capacity',
+    79→    'Tesla Energy Storage Division Revenue Doubles Year Over Year',
+    80→    'China EV Competition Intensifies Pressure on Tesla Margins',
+    81→    'Tesla Supercharger Network Opens to Third-Party Automakers',
+    82→    'Tesla FSD V12 Receives Regulatory Approval in New Markets',
+    83→    'Tesla Stock Faces Volatility Amid Executive Shakeup',
+    84→    'Gigafactory Mexico Construction Ahead of Schedule',
+    85→    'Tesla Robotaxi Fleet Launches Pilot Program in Austin',
+    86→    'Tesla Battery Costs Decline 15% with New Cell Technology',
+    87→    'Analysts Raise Tesla Price Target Following Strong Deliveries',
+    88→  ],
+    89→  MSFT: [
+    90→    'Microsoft Azure Cloud Revenue Growth Beats Expectations',
+    91→    'Copilot AI Integration Drives Enterprise Office 365 Adoption',
+    92→    'Microsoft Activision Acquisition Yields Strong Gaming Revenue',
+    93→    'GitHub Copilot Reaches 10 Million Active Developers',
+    94→    'Microsoft Teams Surpasses Slack in Enterprise Market Share',
+    95→    'Azure AI Services See 300% Growth in Customer Adoption',
+    96→    'Microsoft Stock Dividend Increase Signals Board Confidence',
+    97→    'Windows 12 Development Focuses on AI-First Experience',
+    98→    'Microsoft LinkedIn Revenue Growth Accelerates in B2B Market',
+    99→    'Microsoft Security Division Reaches $20 Billion Annual Revenue',
+   100→    'Xbox Game Pass Subscriber Base Exceeds 40 Million',
+   101→    'Microsoft Announces $10 Billion AI Infrastructure Investment',
+   102→  ],
+   103→  NVDA: [
+   104→    'NVIDIA Data Center Revenue Surges 400% Year Over Year',
+   105→    'NVIDIA Blackwell GPU Architecture Sets New Performance Records',
+   106→    'AI Chip Demand Exceeds Supply as Tech Giants Expand Capacity',
+   107→    'NVIDIA Announces Next-Gen H200 Tensor Core GPU for AI Training',
+   108→    'NVIDIA Market Cap Crosses $3 Trillion Milestone',
+   109→    'NVIDIA Expands Automotive AI Platform with Major Automaker Deals',
+   110→    'NVIDIA Stock Splits 10-for-1 to Boost Retail Accessibility',
+   111→    'Competitors Challenge NVIDIA Dominance in AI Chip Market',
+   112→    'NVIDIA CUDA Ecosystem Strengthens Developer Lock-in Advantage',
+   113→    'NVIDIA Omniverse Platform Gains Traction in Digital Twin Market',
+   114→    'NVIDIA Earnings Beat Estimates Driven by AI Infrastructure Demand',
+   115→    'Sovereign AI Initiatives Create New Revenue Stream for NVIDIA',
+   116→  ],
+   117→  GOOG: [
+   118→    'Google Gemini AI Model Outperforms GPT-4 in Key Benchmarks',
+   119→    'Alphabet Cloud Revenue Growth Reaccelerates to 35%',
+   120→    'Google Search AI Overviews Roll Out Globally',
+   121→    'YouTube Advertising Revenue Hits New All-Time High',
+   122→    'Alphabet Stock Buyback Program Expanded by $70 Billion',
+   123→    'Google Waymo Autonomous Fleet Expands to 5 New Cities',
+   124→    'Alphabet Faces Antitrust Ruling in DOJ Search Monopoly Case',
+   125→    'Google Pixel 9 Sales Exceed Internal Projections',
+   126→    'Alphabet DeepMind Achieves Breakthrough in Protein Folding AI',
+   127→    'Google Cloud AI Platform Wins Major Enterprise Contracts',
+   128→    'Alphabet Nest Smart Home Revenue Grows 40% Year Over Year',
+   129→    'Google Ad Market Share Remains Dominant Despite AI Disruption',
+   130→  ],
+   131→  META: [
+   132→    'Meta AI Assistant Reaches 500 Million Monthly Active Users',
+   133→    'Meta Platforms Reality Labs Losses Narrow as AR/VR Grows',
+   134→    'Instagram Reels Monetization Improves Ad Revenue Per User',
+   135→    'Meta Threads User Base Surpasses 250 Million',
+   136→    'Meta Stock Rallies on Strong Advertising Revenue Growth',
+   137→    'WhatsApp Business Messaging Revenue Model Shows Promise',
+   138→    'Meta Llama 3 Open Source Model Gains Industry Adoption',
+   139→    'Meta Announces $35 Billion AI Data Center Investment Plan',
+   140→    'Facebook Engagement Metrics Show Unexpected Resurgence',
+   141→    'Meta Virtual Reality Headset Sales Double During Holiday Quarter',
+   142→    'Meta Content Moderation AI Reduces Harmful Content by 60%',
+   143→    'Meta Platforms Enters AR Glasses Market with Smart Specs',
+   144→  ],
+   145→  AMZN: [
+   146→    'Amazon AWS Revenue Growth Accelerates to 20% in Q3',
+   147→    'Amazon Prime Membership Reaches 250 Million Subscribers',
+   148→    'Amazon Advertising Business Becomes Major Profit Driver',
+   149→    'Amazon Robotics Deployment Reduces Fulfillment Costs by 30%',
+   150→    'Amazon Healthcare Initiative Expands to 35 New Markets',
+   151→    'Amazon Stock Hits All-Time High on Cloud Strength',
+   152→    'Project Kuiper Satellite Internet Receives FCC Approval',
+   153→    'Amazon Same-Day Delivery Now Available in 50 US Cities',
+   154→    'AWS Announces Custom AI Chips to Compete with NVIDIA',
+   155→    'Amazon MGM Studios Streaming Investment Yields Original Hits',
+   156→    'Amazon One Palm Payment Technology Expands Nationwide',
+   157→    'Amazon Logistics Network Handles Record Holiday Season Volume',
+   158→  ],
+   159→  INFY: [
+   160→    'Infosys Wins $2 Billion AI Transformation Deal with Fortune 500',
+   161→    'Infosys Revenue Growth Beats Expectations in Q2 Results',
+   162→    'Infosys Topaz AI Platform Gains Traction Among Enterprise Clients',
+   163→    'Infosys Expands European Operations with New Delivery Centers',
+   164→    'Infosys Stock Rallies on Strong Guidance Upgrade',
+   165→    'Infosys Partners with NVIDIA for AI Workforce Training Program',
+   166→    'Infosys Cloud Infrastructure Practice Sees 50% Revenue Growth',
+   167→    'Infosys Wins Major Banking Sector Digital Transformation Deal',
+   168→    'Infosys Employee Attrition Rate Drops to Multi-Year Low',
+   169→    'Infosys Announces Strategic Acquisition in Consulting Space',
+   170→    'Infosys Cobalt Cloud Platform Adds 100 New Enterprise Clients',
+   171→    'Infosys Sustainability Initiative Achieves Carbon Neutral Status',
+   172→  ],
+   173→  TCS: [
+   174→    'Tata Consultancy Services Reports Strong Q2 Revenue Growth',
+   175→    'TCS Wins Landmark $3 Billion Deal with UK Financial Institution',
+   176→    'TCS AI.Cloud Platform Launches with Enterprise-Grade Features',
+   177→    'TCS Employee Headcount Reaches 600,000 Worldwide',
+   178→    'TCS Stock Gains on Better-Than-Expected Margin Expansion',
+   179→    'TCS Enters Strategic Partnership with Google Cloud',
+   180→    'TCS Banking Software Platform Wins Multiple Global Clients',
+   181→    'TCS Digital Reimagination Practice Revenue Surges 40%',
+   182→    'TCS Expands Latin American Presence with New Brazil Office',
+   183→    'TCS Cognitive AI Practice Reaches $1 Billion Annual Revenue',
+   184→    'TCS Named Leader in Gartner Magic Quadrant for IT Services',
+   185→    'TCS Sustainability Report Shows 30% Reduction in Carbon Footprint',
+   186→  ],
+   187→  RELIANCE: [
+   188→    'Reliance Jio User Base Crosses 500 Million Mark in India',
+   189→    'Reliance Industries Announces Major Green Energy Investment',
+   190→    'Reliance Retail Expansion Reaches 20,000 Stores Nationwide',
+   191→    'Reliance Stock Surges on Strong Q3 Earnings Beat',
+   192→    'Jio Financial Services Launches Digital Banking Platform',
+   193→    'Reliance Partners with Global Tech Firms for AI Initiative',
+   194→    'Reliance New Energy Division Secures $5 Billion in Funding',
+   195→    'Reliance Petrochemical Margins Improve on Strong Demand',
+   196→    'Jio 5G Network Now Covers 80% of Urban India',
+   197→    'Reliance Media & Entertainment Revenue Grows 25%',
+   198→    'Reliance Announces Strategic Investment in Semiconductor Sector',
+   199→    'Reliance Industries Market Cap Approaches $300 Billion',
+   200→  ],
+   201→  JPM: [
+   202→    'JPMorgan Chase Reports Record Annual Profit of $50 Billion',
+   203→    'Jamie Dimon Warns of Geopolitical Risks to Global Economy',
+   204→    'JPMorgan Investment Banking Revenue Surges on IPO Recovery',
+   205→    'JPMorgan Stock Dividend Increase Signals Strong Capital Position',
+   206→    'JPMorgan Expands AI-Powered Trading Platform Capabilities',
+   207→    'JPMorgan Consumer Banking Sees Strong Credit Growth',
+   208→    'JPMorgan Asset Management AUM Crosses $4 Trillion',
+   209→    'JPMorgan Wins Regulatory Approval for Crypto Custody Service',
+   210→    'JPMorgan Chase Acquires Fintech Startup to Boost Digital Banking',
+   211→    'JPMorgan Fixed Income Trading Revenue Reaches New Heights',
+   212→    'JPMorgan Opens New Offices in Key Asia-Pacific Markets',
+   213→    'JPMorgan AI Research Lab Publishes Breakthrough Financial Models',
+   214→  ],
+   215→  V: [
+   216→    'Visa Revenue Growth Accelerates on Cross-Border Payment Recovery',
+   217→    'Visa Stock Hits All-Time High on Strong Fiscal Results',
+   218→    'Visa Launches AI-Powered Fraud Detection System Globally',
+   219→    'Visa Direct Real-Time Payment Volume Grows 30%',
+   220→    'Visa Partners with Central Banks on Digital Currency Pilots',
+   221→    'Visa Stock Split Announced to Boost Share Liquidity',
+   222→    'Visa B2B Connect Network Expands to 100 Countries',
+   223→    'Visa Credit Card Spending Data Signals Consumer Confidence',
+   224→    'Visa Acquires Fintech Firm to Enhance Open Banking Capabilities',
+   225→    'Visa Tap-to-Pay Adoption Surges Among Small Businesses',
+   226→    'Visa Tokenization Service Processes 1 Billion Transactions',
+   227→    'Visa Sustainability Bond Program Reaches $1 Billion Issuance',
+   228→  ],
+   229→};
+   230→
+   231→const TRENDING_TOPICS: Record<string, string[]> = {
+   232→  AAPL: ['AI Integration', 'Services Revenue', 'iPhone Demand', 'China Market'],
+   233→  TSLA: ['FSD Autonomy', 'Cybertruck', 'Energy Storage', 'Gigafactory'],
+   234→  MSFT: ['Azure AI', 'Copilot', 'Cloud Growth', 'Gaming'],
+   235→  NVDA: ['AI Chips', 'Blackwell GPU', 'Data Center', 'Sovereign AI'],
+   236→  GOOG: ['Gemini AI', 'Cloud Revenue', 'Waymo', 'Antitrust'],
+   237→  META: ['AI Assistant', 'Threads', 'Reality Labs', 'Llama 3'],
+   238→  AMZN: ['AWS Growth', 'Prime', 'Advertising', 'Robotics'],
+   239→  INFY: ['AI Transformation', 'Topaz Platform', 'Cloud Practice', 'Attrition'],
+   240→  TCS: ['Banking Deals', 'AI.Cloud', 'Digital Growth', 'Sustainability'],
+   241→  RELIANCE: ['Jio 5G', 'Green Energy', 'Retail Expansion', 'New Energy'],
+   242→  JPM: ['Record Profits', 'Investment Banking', 'AI Trading', 'Crypto'],
+   243→  V: ['Cross-Border', 'Real-Time Payments', 'Digital Currency', 'Fraud Detection'],
+   244→};
+   245→
+   246→function generateArticles(symbol: string): NewsArticle[] {
+   247→  const headlines = HEADLINES_BY_STOCK[symbol] || HEADLINES_BY_STOCK.AAPL;
+   248→  const stock = STOCKS[symbol] || STOCKS.AAPL;
+   249→  const hash = symbol.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+   250→
+   251→  return headlines.map((headline, i) => {
+   252→    const r1 = seededRandom(hash * 100 + i * 7);
+   253→    const r2 = seededRandom(hash * 200 + i * 13);
+   254→    const r3 = seededRandom(hash * 300 + i * 17);
+   255→    const r4 = seededRandom(hash * 400 + i * 23);
+   256→
+   257→    let sentiment: Sentiment;
+   258→    if (r1 > 0.55) sentiment = 'positive';
+   259→    else if (r1 > 0.25) sentiment = 'neutral';
+   260→    else sentiment = 'negative';
+   261→
+   262→    const positivePercent = sentiment === 'positive' ? 55 + Math.round(r2 * 30) : sentiment === 'negative' ? 10 + Math.round(r2 * 20) : 20 + Math.round(r2 * 20);
+   263→    const negativePercent = sentiment === 'negative' ? 50 + Math.round(r3 * 30) : sentiment === 'positive' ? 5 + Math.round(r3 * 15) : 15 + Math.round(r3 * 15);
+   264→    const neutralPercent = 100 - positivePercent - negativePercent;
+   265→
+   266→    const times = ['15m ago', '32m ago', '1h ago', '2h ago', '3h ago', '5h ago', '7h ago', '8h ago', '12h ago', '18h ago', '1d ago', '2d ago'];
+   267→
+   268→    return {
+   269→      id: i,
+   270→      headline,
+   271→      source: SOURCES[Math.floor(r4 * SOURCES.length)],
+   272→      time: times[i % times.length],
+   273→      sentiment,
+   274→      positivePercent,
+   275→      negativePercent,
+   276→      neutralPercent,
+   277→      summary: `${stock.name} related development. Market impact assessment pending detailed analysis.`,
+   278→    };
+   279→  });
+   280→}
+   281→
+   282→// ─── Animation variants ───────────────────────────────────────────────────────
+   283→const containerVariants = {
+   284→  hidden: { opacity: 0 },
+   285→  show: {
+   286→    opacity: 1,
+   287→    transition: { staggerChildren: 0.05, delayChildren: 0.1 },
+   288→  },
+   289→};
+   290→
+   291→const itemVariants = {
+   292→  hidden: { opacity: 0, y: 20 },
+   293→  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' as const } },
+   294→};
+   295→
+   296→// ─── Component ────────────────────────────────────────────────────────────────
+   297→export function NewsSentimentPage() {
+   298→  const { selectedStock } = useAppStore();
+   299→  const [stockFilter, setStockFilter] = useState(selectedStock.symbol);
+   300→  const [isLoading, setIsLoading] = useState(true);
+   301→  const [dataSource, setDataSource] = useState<'real' | 'fallback' | 'local'>('local');
+   302→  const [apiSummary, setApiSummary] = useState<{
+   303→    overallScore: number;
+   304→    positivePct: number;
+   305→    negativePct: number;
+   306→    neutralPct: number;
+   307→    positiveCount: number;
+   308→    negativeCount: number;
+   309→    neutralCount: number;
+   310→    trending: string[];
+   311→  } | null>(null);
+   312→
+   313→  // Fetch real news from API
+   314→  const [apiArticles, setApiArticles] = useState<Array<NewsArticle>>([]);
+   315→
+   316→  useEffect(() => {
+   317→    let cancelled = false;
+   318→
+   319→    fetch(`/api/sentiment?symbol=${stockFilter}`)
+   320→      .then((res) => res.json())
+   321→      .then((data) => {
+   322→        if (cancelled) return;
+   323→        setDataSource(data.dataSource || 'local');
+   324→        setApiSummary(data.summary || null);
+   325→
+   326→        if (data.articles && data.articles.length > 0) {
+   327→          const mapped: NewsArticle[] = data.articles.map((a: Record<string, unknown>, i: number) => ({
+   328→            id: i,
+   329→            headline: a.headline as string || '',
+   330→            source: a.source as string || '',
+   331→            time: a.time as string || '',
+   332→            sentiment: (a.sentiment as Sentiment) || 'neutral',
+   333→            positivePercent: (a.positivePct as number) || (a.positivePercent as number) || 33,
+   334→            negativePercent: (a.negativePct as number) || (a.negativePercent as number) || 33,
+   335→            neutralPercent: (a.neutralPct as number) || (a.neutralPercent as number) || 34,
+   336→            summary: (a.snippet as string) || '',
+   337→          }));
+   338→          setApiArticles(mapped);
+   339→        }
+   340→      })
+   341→      .catch(() => setDataSource('local'))
+   342→      .finally(() => { if (!cancelled) setIsLoading(false); });
+   343→
+   344→    return () => { cancelled = true; };
+   345→  }, [stockFilter]);
+   346→
+   347→  // Use API articles if available, else fall back to local
+   348→  const articles = apiArticles.length > 0 ? apiArticles : generateArticles(stockFilter);
+   349→  const stock = STOCKS[stockFilter] || STOCKS.AAPL;
+   350→
+   351→  const sentimentCounts = useMemo(() => {
+   352→    if (apiSummary && dataSource !== 'local') {
+   353→      return {
+   354→        positive: apiSummary.positiveCount,
+   355→        negative: apiSummary.negativeCount,
+   356→        neutral: apiSummary.neutralCount,
+   357→        total: apiSummary.positiveCount + apiSummary.negativeCount + apiSummary.neutralCount,
+   358→      };
+   359→    }
+   360→    const pos = articles.filter((a) => a.sentiment === 'positive').length;
+   361→    const neg = articles.filter((a) => a.sentiment === 'negative').length;
+   362→    const neu = articles.filter((a) => a.sentiment === 'neutral').length;
+   363→    return { positive: pos, negative: neg, neutral: neu, total: articles.length };
+   364→  }, [articles, apiSummary, dataSource]);
+   365→
+   366→  const aggregateScore = useMemo(() => {
+   367→    if (apiSummary && dataSource !== 'local') return apiSummary.overallScore;
+   368→    const { positive, total } = sentimentCounts;
+   369→    return Math.round((positive / total) * 100);
+   370→  }, [sentimentCounts, apiSummary, dataSource]);
+   371→
+   372→  const pieData = useMemo(
+   373→    () => [
+   374→      { name: 'Positive', value: sentimentCounts.positive, color: '#10b981' },
+   375→      { name: 'Neutral', value: sentimentCounts.neutral, color: '#f59e0b' },
+   376→      { name: 'Negative', value: sentimentCounts.negative, color: '#ef4444' },
+   377→    ],
+   378→    [sentimentCounts]
+   379→  );
+   380→
+   381→  const trendingTopics = useMemo(
+   382→    () => TRENDING_TOPICS[stockFilter] || TRENDING_TOPICS.AAPL,
+   383→    [stockFilter]
+   384→  );
+   385→
+   386→  return (
+   387→    <motion.div
+   388→      className="space-y-6"
+   389→      variants={containerVariants}
+   390→      initial="hidden"
+   391→      animate="show"
+   392→    >
+   393→      <SectionHeader
+   394→        title="News Sentiment"
+   395→        subtitle={`AI-powered sentiment analysis for ${stock.name} (${stockFilter})${dataSource === 'real' ? '' : ''}`}
+   396→        badge={dataSource === 'real' ? { label: 'AI ANALYZED', color: 'bg-emerald-500/15 text-emerald-400' } : undefined}
+   397→        action={
+   398→          <Select value={stockFilter} onValueChange={setStockFilter}>
+   399→            <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
+   400→              <SelectValue />
+   401→            </SelectTrigger>
+   402→            <SelectContent>
+   403→              {Object.values(STOCKS).map((s) => (
+   404→                <SelectItem key={s.symbol} value={s.symbol}>
+   405→                  {s.symbol} — {s.name}
+   406→                </SelectItem>
+   407→              ))}
+   408→            </SelectContent>
+   409→          </Select>
+   410→        }
+   411→      />
+   412→
+   413→      {/* ── Overall Sentiment Summary ─────────────────────────────────────── */}
+   414→      <motion.div variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+   415→        {/* Gauge */}
+   416→        <Card className="glass-card">
+   417→          <CardHeader className="pb-2">
+   418→            <CardTitle className="text-sm font-medium text-slate-400 uppercase tracking-wider">
+   419→              Overall Sentiment
+   420→            </CardTitle>
+   421→          </CardHeader>
+   422→          <CardContent className="flex flex-col items-center pt-2">
+   423→            <GaugeChart
+   424→              value={aggregateScore}
+   425→              label="Sentiment Score"
+   426→              size={180}
+   427→              strokeWidth={12}
+   428→            />
+   429→            <div className="flex gap-4 mt-4 text-xs">
+   430→              <span className="text-emerald-400 font-medium">
+   431→                {sentimentCounts.positive} Positive
+   432→              </span>
+   433→              <span className="text-yellow-400 font-medium">
+   434→                {sentimentCounts.neutral} Neutral
+   435→              </span>
+   436→              <span className="text-red-400 font-medium">
+   437→                {sentimentCounts.negative} Negative
+   438→              </span>
+   439→            </div>
+   440→          </CardContent>
+   441→        </Card>
+   442→
+   443→        {/* Sentiment Distribution Donut */}
+   444→        <Card className="glass-card">
+   445→          <CardHeader className="pb-2">
+   446→            <CardTitle className="text-sm font-medium text-slate-400 uppercase tracking-wider">
+   447→              Sentiment Distribution
+   448→            </CardTitle>
+   449→          </CardHeader>
+   450→          <CardContent>
+   451→            <div className="h-[180px]">
+   452→              <ResponsiveContainer width="100%" height="100%">
+   453→                <PieChart>
+   454→                  <Pie
+   455→                    data={pieData}
+   456→                    cx="50%"
+   457→                    cy="50%"
+   458→                    innerRadius={50}
+   459→                    outerRadius={75}
+   460→                    paddingAngle={3}
+   461→                    dataKey="value"
+   462→                    stroke="none"
+   463→                  >
+   464→                    {pieData.map((entry, idx) => (
+   465→                      <Cell key={idx} fill={entry.color} />
+   466→                    ))}
+   467→                  </Pie>
+   468→                  <Tooltip
+   469→                    contentStyle={{
+   470→                      background: 'rgba(15,23,42,0.95)',
+   471→                      border: '1px solid rgba(99,102,241,0.2)',
+   472→                      borderRadius: '8px',
+   473→                      color: '#e2e8f0',
+   474→                      fontSize: '12px',
+   475→                    }}
+   476→                  />
+   477→                </PieChart>
+   478→              </ResponsiveContainer>
+   479→            </div>
+   480→            <div className="flex justify-center gap-4 mt-2">
+   481→              {pieData.map((d) => (
+   482→                <div key={d.name} className="flex items-center gap-1.5 text-xs">
+   483→                  <span
+   484→                    className="w-2.5 h-2.5 rounded-full"
+   485→                    style={{ background: d.color }}
+   486→                  />
+   487→                  <span className="text-slate-400">
+   488→                    {d.name} ({d.value})
+   489→                  </span>
+   490→                </div>
+   491→              ))}
+   492→            </div>
+   493→          </CardContent>
+   494→        </Card>
+   495→
+   496→        {/* Trending Topics */}
+   497→        <Card className="glass-card">
+   498→          <CardHeader className="pb-2">
+   499→            <CardTitle className="text-sm font-medium text-slate-400 uppercase tracking-wider">
+   500→              Trending Topics
+   501→            </CardTitle>
+   502→          </CardHeader>
+   503→          <CardContent className="space-y-3 pt-2">
+   504→            {(apiSummary?.trending?.length ? apiSummary.trending : trendingTopics).map((topic, i) => (
+   505→              <motion.div
+   506→                key={topic}
+   507→                initial={{ opacity: 0, x: 20 }}
+   508→                animate={{ opacity: 1, x: 0 }}
+   509→                transition={{ delay: 0.3 + i * 0.08 }}
+   510→                className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/8 transition-colors"
+   511→              >
+   512→                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400">
+   513→                  <Hash className="w-4 h-4" />
+   514→                </div>
+   515→                <div className="flex-1">
+   516→                  <p className="text-sm font-medium text-white">{topic}</p>
+   517→                  <p className="text-xs text-slate-500">
+   518→                    {Math.round(20 + seededRandom(stockFilter.length + i * 11) * 80)} mentions
+   519→                  </p>
+   520→                </div>
+   521→                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+   522→              </motion.div>
+   523→            ))}
+   524→          </CardContent>
+   525→        </Card>
+   526→      </motion.div>
+   527→
+   528→      {/* ── Articles List ─────────────────────────────────────────────────── */}
+   529→      <motion.div variants={itemVariants}>
+   530→        <Card className="glass-card">
+   531→          <CardHeader>
+   532→            <CardTitle className="flex items-center gap-2 text-white">
+   533→              <Newspaper className="w-5 h-5 text-indigo-400" />
+   534→              Latest News & Analysis
+   535→            </CardTitle>
+   536→          </CardHeader>
+   537→          <CardContent>
+   538→            <ScrollArea className="max-h-[600px]">
+   539→              <div className="space-y-3">
+   540→                <AnimatePresence mode="popLayout">
+   541→                  {articles.map((article) => (
+   542→                    <motion.article
+   543→                      key={article.id}
+   544→                      layout
+   545→                      initial={{ opacity: 0, y: 10 }}
+   546→                      animate={{ opacity: 1, y: 0 }}
+   547→                      exit={{ opacity: 0, y: -10 }}
+   548→                      transition={{ duration: 0.3 }}
+   549→                      className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.04] hover:bg-white/[0.06] hover:border-indigo-500/20 transition-all group"
+   550→                    >
+   551→                      <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+   552→                        <div className="flex-1 min-w-0">
+   553→                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+   554→                            <Badge
+   555→                              variant="outline"
+   556→                              className={`text-[10px] px-2 py-0.5 font-semibold ${
+   557→                                article.sentiment === 'positive'
+   558→                                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+   559→                                  : article.sentiment === 'negative'
+   560→                                  ? 'border-red-500/30 bg-red-500/10 text-red-400'
+   561→                                  : 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400'
+   562→                              }`}
+   563→                            >
+   564→                              {article.sentiment === 'positive' && <TrendingUp className="w-3 h-3 mr-1" />}
+   565→                              {article.sentiment === 'negative' && <TrendingDown className="w-3 h-3 mr-1" />}
+   566→                              {article.sentiment === 'neutral' && <Minus className="w-3 h-3 mr-1" />}
+   567→                              {article.sentiment.charAt(0).toUpperCase() + article.sentiment.slice(1)}
+   568→                            </Badge>
+   569→                            <span className="text-[11px] text-slate-500 font-medium">{article.source}</span>
+   570→                            <span className="text-[11px] text-slate-600">•</span>
+   571→                            <span className="text-[11px] text-slate-500">{article.time}</span>
+   572→                          </div>
+   573→                          <h3 className="text-sm font-semibold text-white leading-snug group-hover:text-indigo-300 transition-colors">
+   574→                            {article.headline}
+   575→                          </h3>
+   576→                        </div>
+   577→                        {/* Sentiment breakdown bar */}
+   578→                        <div className="sm:w-40 shrink-0 space-y-1.5">
+   579→                          <div className="flex h-2 rounded-full overflow-hidden bg-white/5">
+   580→                            <div
+   581→                              className="bg-emerald-500 transition-all duration-500"
+   582→                              style={{ width: `${article.positivePercent}%` }}
+   583→                            />
+   584→                            <div
+   585→                              className="bg-yellow-500 transition-all duration-500"
+   586→                              style={{ width: `${article.neutralPercent}%` }}
+   587→                            />
+   588→                            <div
+   589→                              className="bg-red-500 transition-all duration-500"
+   590→                              style={{ width: `${article.negativePercent}%` }}
+   591→                            />
+   592→                          </div>
+   593→                          <div className="flex justify-between text-[10px]">
+   594→                            <span className="text-emerald-400">{article.positivePercent}%</span>
+   595→                            <span className="text-yellow-400">{article.neutralPercent}%</span>
+   596→                            <span className="text-red-400">{article.negativePercent}%</span>
+   597→                          </div>
+   598→                        </div>
+   599→                      </div>
+   600→                    </motion.article>
+   601→                  ))}
+   602→                </AnimatePresence>
+   603→              </div>
+   604→            </ScrollArea>
+   605→          </CardContent>
+   606→        </Card>
+   607→      </motion.div>
+   608→    </motion.div>
+   609→  );
+   610→}

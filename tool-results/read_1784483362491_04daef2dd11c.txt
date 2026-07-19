@@ -1,0 +1,769 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState, useEffect } from 'react';
+     4→import { motion } from 'framer-motion';
+     5→import {
+     6→  AreaChart,
+     7→  Area,
+     8→  XAxis,
+     9→  YAxis,
+    10→  Tooltip,
+    11→  ResponsiveContainer,
+    12→} from 'recharts';
+    13→import {
+    14→  DollarSign,
+    15→  TrendingUp,
+    16→  BarChart3,
+    17→  Building2,
+    18→  Activity,
+    19→  BrainCircuit,
+    20→  Target,
+    21→  ShieldAlert,
+    22→  ArrowUpRight,
+    23→  ArrowDownRight,
+    24→  Sparkles,
+    25→  Eye,
+    26→  Zap,
+    27→  AlertTriangle,
+    28→  TrendingDown,
+    29→  CandlestickChart,
+    30→} from 'lucide-react';
+    31→import { useAppStore } from '@/lib/store';
+    32→import {
+    33→  STOCKS,
+    34→  generateStockData,
+    35→  formatNumber,
+    36→  formatPrice,
+    37→  formatPercent,
+    38→  getChangeColor,
+    39→  type OHLCV,
+    40→} from '@/lib/stock-utils';
+    41→import { KPICard } from '@/components/shared/kpi-card';
+    42→import { GaugeChart, CircularProgress } from '@/components/shared/gauge-chart';
+    43→import { SectionHeader } from '@/components/shared/animated-counter';
+    44→import { cn } from '@/lib/utils';
+    45→import { Badge } from '@/components/ui/badge';
+    46→
+    47→// ─── Stagger animation container ───────────────────────────────────────────
+    48→const containerVariants = {
+    49→  hidden: { opacity: 0 },
+    50→  show: {
+    51→    opacity: 1,
+    52→    transition: { staggerChildren: 0.06, delayChildren: 0.1 },
+    53→  },
+    54→};
+    55→
+    56→const itemVariants = {
+    57→  hidden: { opacity: 0, y: 20 },
+    58→  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
+    59→};
+    60→
+    61→// ─── Custom tooltip for charts ─────────────────────────────────────────────
+    62→function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string }>; label?: string }) {
+    63→  if (!active || !payload?.length) return null;
+    64→  return (
+    65→    <div className="market-tooltip px-3 py-2 text-xs">
+    66→      <p className="text-slate-400 mb-1">{label}</p>
+    67→      <p className="text-white font-semibold">${payload[0].value.toFixed(2)}</p>
+    68→    </div>
+    69→  );
+    70→}
+    71→
+    72→// ─── Fear & Greed Semicircle Gauge ─────────────────────────────────────────
+    73→function FearGreedGauge({ value }: { value: number }) {
+    74→  const clamped = Math.max(0, Math.min(100, value));
+    75→
+    76→  const getZone = () => {
+    77→    if (clamped <= 25) return { label: 'Extreme Fear', color: '#ef4444' };
+    78→    if (clamped <= 45) return { label: 'Fear', color: '#f97316' };
+    79→    if (clamped <= 55) return { label: 'Neutral', color: '#eab308' };
+    80→    if (clamped <= 75) return { label: 'Greed', color: '#22c55e' };
+    81→    return { label: 'Extreme Greed', color: '#10b981' };
+    82→  };
+    83→
+    84→  const zone = getZone();
+    85→
+    86→  // Semicircle arc parameters
+    87→  const width = 260;
+    88→  const height = 145;
+    89→  const cx = width / 2;
+    90→  const cy = height - 10;
+    91→  const radius = 100;
+    92→  const strokeWidth = 18;
+    93→
+    94→  // Convert value (0-100) to angle (PI to 0, left to right)
+    95→  const valueAngle = Math.PI - (clamped / 100) * Math.PI;
+    96→  const startX = cx - radius;
+    97→  const startY = cy;
+    98→  const endX = cx + radius;
+    99→  const endY = cy;
+   100→
+   101→  // Needle tip position
+   102→  const needleLen = radius - strokeWidth - 5;
+   103→  const needleTipX = cx - needleLen * Math.cos(valueAngle);
+   104→  const needleTipY = cy - needleLen * Math.sin(valueAngle);
+   105→
+   106→  // Zone segments for background arc
+   107→  const segments = [
+   108→    { from: 0, to: 25, color: '#ef4444' },
+   109→    { from: 25, to: 45, color: '#f97316' },
+   110→    { from: 45, to: 55, color: '#eab308' },
+   111→    { from: 55, to: 75, color: '#22c55e' },
+   112→    { from: 75, to: 100, color: '#10b981' },
+   113→  ];
+   114→
+   115→  const getArcPath = (fromPct: number, toPct: number) => {
+   116→    const startAngle = Math.PI - (fromPct / 100) * Math.PI;
+   117→    const endAngle = Math.PI - (toPct / 100) * Math.PI;
+   118→    const sx = cx + radius * Math.cos(startAngle);
+   119→    const sy = cy - radius * Math.sin(startAngle);
+   120→    const ex = cx + radius * Math.cos(endAngle);
+   121→    const ey = cy - radius * Math.sin(endAngle);
+   122→    const largeArc = (fromPct - toPct) > 50 ? 1 : 0;
+   123→    return `M ${sx} ${sy} A ${radius} ${radius} 0 ${largeArc} 0 ${ex} ${ey}`;
+   124→  };
+   125→
+   126→  return (
+   127→    <div className="flex flex-col items-center">
+   128→      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+   129→        {/* Background segments */}
+   130→        {segments.map((seg) => (
+   131→          <path
+   132→            key={`${seg.from}-${seg.to}`}
+   133→            d={getArcPath(seg.from, seg.to)}
+   134→            fill="none"
+   135→            stroke={seg.color}
+   136→            strokeWidth={strokeWidth}
+   137→            strokeLinecap="butt"
+   138→            opacity={0.2}
+   139→          />
+   140→        ))}
+   141→
+   142→        {/* Active arc up to value */}
+   143→        <motion.path
+   144→          d={getArcPath(0, clamped)}
+   145→          fill="none"
+   146→          stroke={zone.color}
+   147→          strokeWidth={strokeWidth}
+   148→          strokeLinecap="round"
+   149→          initial={{ pathLength: 0 }}
+   150→          animate={{ pathLength: 1 }}
+   151→          transition={{ duration: 1.5, ease: 'easeOut' as const }}
+   152→          style={{ filter: `drop-shadow(0 0 8px ${zone.color}60)` }}
+   153→        />
+   154→
+   155→        {/* Needle */}
+   156→        <motion.line
+   157→          x1={cx}
+   158→          y1={cy}
+   159→          x2={needleTipX}
+   160→          y2={needleTipY}
+   161→          stroke={zone.color}
+   162→          strokeWidth={2.5}
+   163→          strokeLinecap="round"
+   164→          initial={{ opacity: 0 }}
+   165→          animate={{ opacity: 1, x2: needleTipX, y2: needleTipY }}
+   166→          transition={{ duration: 1, delay: 0.5 }}
+   167→          style={{ filter: `drop-shadow(0 0 4px ${zone.color}80)` }}
+   168→        />
+   169→        {/* Center dot */}
+   170→        <circle cx={cx} cy={cy} r={5} fill={zone.color} />
+   171→
+   172→        {/* Scale labels */}
+   173→        <text x={startX - 5} y={cy + 14} textAnchor="middle" className="fill-slate-500" fontSize="9">0</text>
+   174→        <text x={endX + 5} y={cy + 14} textAnchor="middle" className="fill-slate-500" fontSize="9">100</text>
+   175→      </svg>
+   176→      <div className="text-center -mt-1">
+   177→        <div className="text-3xl font-bold" style={{ color: zone.color }}>
+   178→          {Math.round(clamped)}
+   179→        </div>
+   180→        <div className="text-xs font-medium mt-0.5" style={{ color: zone.color }}>
+   181→          {zone.label}
+   182→        </div>
+   183→        <div className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest">Fear &amp; Greed Index</div>
+   184→      </div>
+   185→    </div>
+   186→  );
+   187→}
+   188→
+   189→// ─── Ticker item component ─────────────────────────────────────────────────
+   190→function TickerItem({ symbol, price, changePercent }: { symbol: string; price: number; changePercent: number }) {
+   191→  const isPositive = changePercent >= 0;
+   192→  return (
+   193→    <div className="flex items-center gap-2.5 px-5 py-2 whitespace-nowrap">
+   194→      <span className="text-xs font-bold text-white tracking-wider">{symbol}</span>
+   195→      <span className="text-xs text-slate-300">${formatPrice(price)}</span>
+   196→      <span
+   197→        className={cn(
+   198→          'text-xs font-semibold flex items-center gap-0.5',
+   199→          isPositive ? 'text-emerald-400' : 'text-red-400'
+   200→        )}
+   201→      >
+   202→        {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+   203→        {formatPercent(changePercent)}
+   204→      </span>
+   205→    </div>
+   206→  );
+   207→}
+   208→
+   209→// ─── AI Insight item ───────────────────────────────────────────────────────
+   210→function InsightItem({ icon: Icon, text, type }: { icon: React.ElementType; text: string; type: 'bullish' | 'bearish' | 'neutral' | 'warning' }) {
+   211→  const colorMap = {
+   212→    bullish: 'text-emerald-400 bg-emerald-500/10',
+   213→    bearish: 'text-red-400 bg-red-500/10',
+   214→    neutral: 'text-slate-300 bg-slate-500/10',
+   215→    warning: 'text-amber-400 bg-amber-500/10',
+   216→  };
+   217→  return (
+   218→    <motion.div
+   219→      variants={itemVariants}
+   220→      className="flex items-start gap-3 p-3 rounded-xl hover:bg-white/[0.03] transition-colors"
+   221→    >
+   222→      <div className={cn('p-2 rounded-lg shrink-0 mt-0.5', colorMap[type])}>
+   223→        <Icon className="w-3.5 h-3.5" />
+   224→      </div>
+   225→      <p className="text-sm text-slate-300 leading-relaxed">{text}</p>
+   226→    </motion.div>
+   227→  );
+   228→}
+   229→
+   230→// ─── Watchlist sparkline row ───────────────────────────────────────────────
+   231→function WatchlistRow({ symbol }: { symbol: string }) {
+   232→  const stock = STOCKS[symbol];
+   233→
+   234→  const miniData = useMemo(() => {
+   235→    const d = generateStockData(symbol, 20);
+   236→    return d.slice(-20).map((item) => ({ v: item.close }));
+   237→  }, [symbol]);
+   238→
+   239→  if (!stock) return null;
+   240→
+   241→  const isPositive = stock.changePercent >= 0;
+   242→
+   243→  return (
+   244→    <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-white/[0.03] transition-colors group">
+   245→      <div className="w-16 shrink-0">
+   246→        <span className="text-sm font-bold text-white">{symbol}</span>
+   247→      </div>
+   248→      <div className="w-20 shrink-0">
+   249→        <span className="text-sm text-slate-300">${formatPrice(stock.price)}</span>
+   250→      </div>
+   251→      <div className="w-20 shrink-0">
+   252→        <span className={cn('text-xs font-semibold', getChangeColor(stock.changePercent))}>
+   253→          {formatPercent(stock.changePercent)}
+   254→        </span>
+   255→      </div>
+   256→      <div className="flex-1 h-8 min-w-0">
+   257→        <ResponsiveContainer width="100%" height="100%">
+   258→          <AreaChart data={miniData}>
+   259→            <defs>
+   260→              <linearGradient id={`spark-${symbol}`} x1="0" y1="0" x2="0" y2="1">
+   261→                <stop offset="0%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0.3} />
+   262→                <stop offset="100%" stopColor={isPositive ? '#10b981' : '#ef4444'} stopOpacity={0} />
+   263→              </linearGradient>
+   264→            </defs>
+   265→            <Area
+   266→              type="monotone"
+   267→              dataKey="v"
+   268→              stroke={isPositive ? '#10b981' : '#ef4444'}
+   269→              strokeWidth={1.5}
+   270→              fill={`url(#spark-${symbol})`}
+   271→              dot={false}
+   272→              isAnimationActive={false}
+   273→            />
+   274→          </AreaChart>
+   275→        </ResponsiveContainer>
+   276→      </div>
+   277→    </div>
+   278→  );
+   279→}
+   280→
+   281→// ─── Top Gainer/Loser item ─────────────────────────────────────────────────
+   282→function MoverItem({ symbol, price, changePercent }: { symbol: string; price: number; changePercent: number }) {
+   283→  const isPositive = changePercent >= 0;
+   284→  return (
+   285→    <div className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.03] transition-colors">
+   286→      <div className="flex items-center gap-2.5">
+   287→        <div className={cn(
+   288→          'p-1.5 rounded-md',
+   289→          isPositive ? 'bg-emerald-500/10' : 'bg-red-500/10'
+   290→        )}>
+   291→          {isPositive ? (
+   292→            <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" />
+   293→          ) : (
+   294→            <ArrowDownRight className="w-3.5 h-3.5 text-red-400" />
+   295→          )}
+   296→        </div>
+   297→        <div>
+   298→          <p className="text-sm font-bold text-white">{symbol}</p>
+   299→          <p className="text-xs text-slate-500">${formatPrice(price)}</p>
+   300→        </div>
+   301→      </div>
+   302→      <Badge
+   303→        className={cn(
+   304→          'text-[11px] font-semibold border-0',
+   305→          isPositive
+   306→            ? 'bg-emerald-500/15 text-emerald-400'
+   307→            : 'bg-red-500/15 text-red-400'
+   308→        )}
+   309→      >
+   310→        {formatPercent(changePercent)}
+   311→      </Badge>
+   312→    </div>
+   313→  );
+   314→}
+   315→
+   316→// ─── Loading Skeleton ──────────────────────────────────────────────────────
+   317→function DashboardSkeleton() {
+   318→  return (
+   319→    <div className="space-y-6 p-1">
+   320→      {/* Ticker skeleton */}
+   321→      <div className="skeleton-glass h-10 w-full rounded-xl" />
+   322→      {/* KPI skeleton grid */}
+   323→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+   324→        {Array.from({ length: 8 }).map((_, i) => (
+   325→          <div key={i} className="skeleton-glass h-32 rounded-2xl" />
+   326→        ))}
+   327→      </div>
+   328→      {/* Chart + gauge skeleton */}
+   329→      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+   330→        <div className="lg:col-span-2 skeleton-glass h-72 rounded-2xl" />
+   331→        <div className="skeleton-glass h-72 rounded-2xl" />
+   332→      </div>
+   333→      {/* Bottom cards skeleton */}
+   334→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   335→        <div className="skeleton-glass h-64 rounded-2xl" />
+   336→        <div className="skeleton-glass h-64 rounded-2xl" />
+   337→      </div>
+   338→    </div>
+   339→  );
+   340→}
+   341→
+   342→// ─── Main Dashboard Page ───────────────────────────────────────────────────
+   343→export function DashboardPage() {
+   344→  const { selectedStock, watchlist, realQuotes, marketOverview, isLive } = useAppStore();
+   345→  const [mounted, setMounted] = useState(false);
+   346→
+   347→  useEffect(() => {
+   348→    const timer = setTimeout(() => setMounted(true), 200);
+   349→    return () => clearTimeout(timer);
+   350→  }, []);
+   351→
+   352→  // Generate 30-day chart data for selected stock
+   353→  const chartData = useMemo(() => {
+   354→    const data = generateStockData(selectedStock.symbol, 30);
+   355→    return data.map((d: OHLCV) => ({
+   356→      date: d.date.slice(5), // "MM-DD"
+   357→      close: d.close,
+   358→    }));
+   359→  }, [selectedStock.symbol]);
+   360→
+   361→  // Memoize ticker data for all stocks — merge real quotes
+   362→  const tickerStocks = useMemo(() => {
+   363→    return Object.values(STOCKS).map((s) => {
+   364→      const real = realQuotes[s.symbol];
+   365→      if (real && real.price > 0) {
+   366→        return { ...s, price: real.price, change: real.change, changePercent: real.changePercent, volume: real.volume };
+   367→      }
+   368→      return s;
+   369→    });
+   370→  }, [realQuotes]);
+   371→
+   372→  // Compute derived KPI values — use real quotes when available
+   373→  const kpiData = useMemo(() => {
+   374→    const baseStock = STOCKS[selectedStock.symbol] || STOCKS.AAPL;
+   375→    const real = realQuotes[selectedStock.symbol];
+   376→    const stock = real && real.price > 0
+   377→      ? { ...baseStock, price: real.price, change: real.change, changePercent: real.changePercent, volume: real.volume }
+   378→      : baseStock;
+   379→    // Simulated scores
+   380→    const volatilityScore = Math.round(30 + Math.abs(stock.changePercent) * 8 + (stock.volume / stock.avgVolume) * 15);
+   381→    const sentimentScore = Math.round(55 + (stock.changePercent > 0 ? stock.changePercent * 4 : stock.changePercent * 3));
+   382→    const confidenceScore = Math.round(60 + (stock.pe < 35 ? 15 : stock.pe < 50 ? 5 : -10) + (stock.changePercent > 0 ? 8 : -5));
+   383→    const riskLevel = Math.round(20 + volatilityScore * 0.4 + (stock.pe > 50 ? 15 : 0));
+   384→
+   385→    return {
+   386→      price: formatPrice(stock.price),
+   387→      change: formatPercent(stock.changePercent),
+   388→      changeType: stock.changePercent > 0 ? 'positive' as const : stock.changePercent < 0 ? 'negative' as const : 'neutral' as const,
+   389→      changeAmount: formatPrice(Math.abs(stock.change)),
+   390→      volume: formatNumber(stock.volume),
+   391→      marketCap: formatNumber(stock.marketCap),
+   392→      volatilityScore: Math.min(100, volatilityScore),
+   393→      sentimentScore: Math.max(0, Math.min(100, sentimentScore)),
+   394→      confidenceScore: Math.max(0, Math.min(100, confidenceScore)),
+   395→      riskLevel: Math.max(0, Math.min(100, riskLevel)),
+   396→      isReal: !!(real && real.price > 0),
+   397→    };
+   398→  }, [selectedStock.symbol, realQuotes]);
+   399→
+   400→  // Top gainers / losers — use real data when available
+   401→  const { topGainers, topLosers } = useMemo(() => {
+   402→    const stocks = Object.values(STOCKS).map((s) => {
+   403→      const real = realQuotes[s.symbol];
+   404→      if (real && real.price > 0) {
+   405→        return { ...s, price: real.price, changePercent: real.changePercent };
+   406→      }
+   407→      return s;
+   408→    });
+   409→    const sorted = stocks.sort((a, b) => b.changePercent - a.changePercent);
+   410→    return {
+   411→      topGainers: sorted.slice(0, 3),
+   412→      topLosers: sorted.slice(-3).reverse(),
+   413→    };
+   414→  }, [realQuotes]);
+   415→
+   416→  // Fear & Greed — use real market overview when available
+   417→  const fearGreedValue = useMemo(() => {
+   418→    if (marketOverview && marketOverview.fearGreedIndex > 0) {
+   419→      return marketOverview.fearGreedIndex;
+   420→    }
+   421→    const avgChange = Object.values(STOCKS).reduce((s, st) => s + st.changePercent, 0) / Object.keys(STOCKS).length;
+   422→    return Math.round(50 + avgChange * 8 + (Math.random() * 6 - 3));
+   423→  }, [marketOverview]);
+   424→
+   425→  // AI Insights — realistic per selected stock
+   426→  const insights = useMemo(() => {
+   427→    const stock = STOCKS[selectedStock.symbol] || STOCKS.AAPL;
+   428→    const allInsights: Record<string, Array<{ icon: React.ElementType; text: string; type: 'bullish' | 'bearish' | 'neutral' | 'warning' }>> = {
+   429→      AAPL: [
+   430→        { icon: TrendingUp, text: `${stock.symbol} showing steady accumulation with volume 12% above 20-day average, suggesting institutional buying interest.`, type: 'bullish' },
+   431→        { icon: Zap, text: `RSI at 58.4 — neutral zone with upward bias. MACD histogram turning positive for the first time in 2 weeks.`, type: 'bullish' },
+   432→        { icon: AlertTriangle, text: `Price approaching key resistance at $${formatPrice(stock.high52w)}. A break above could trigger a rally to new 52-week highs.`, type: 'warning' },
+   433→        { icon: BrainCircuit, text: `AI model detects a 73% probability of continued uptrend in the next 5 trading sessions based on pattern recognition.`, type: 'neutral' },
+   434→      ],
+   435→      TSLA: [
+   436→        { icon: TrendingDown, text: `${stock.symbol} experiencing profit-taking after recent run. RSI at 42.1 suggests weakening momentum.`, type: 'bearish' },
+   437→        { icon: Zap, text: `Volume surge of 45% above average indicates active institutional repositioning. Watch for support at $${formatPrice(stock.low52w * 1.15)}.`, type: 'warning' },
+   438→        { icon: BrainCircuit, text: `AI detects a potential double-bottom formation. 68% probability of reversal within 3 sessions.`, type: 'neutral' },
+   439→        { icon: AlertTriangle, text: `High short interest at 4.2% could fuel a short squeeze if positive catalyst emerges.`, type: 'warning' },
+   440→      ],
+   441→      NVDA: [
+   442→        { icon: TrendingUp, text: `${stock.symbol} showing strong momentum with RSI at 72.3, approaching overbought territory but still healthy for strong trends.`, type: 'bullish' },
+   443→        { icon: Zap, text: `Revenue growth acceleration detected — AI chip demand metrics show 34% QoQ increase in data center segment.`, type: 'bullish' },
+   444→        { icon: BrainCircuit, text: `AI confidence score at 82% for continued outperformance. Pattern matches historic post-earnings surges.`, type: 'bullish' },
+   445→        { icon: AlertTriangle, text: `P/E ratio at ${stock.pe}x is elevated. Monitor for any demand deceleration signals in upcoming guidance.`, type: 'warning' },
+   446→      ],
+   447→    };
+   448→
+   449→    // Default insights for stocks without specific ones
+   450→    const defaultInsights = [
+   451→      { icon: TrendingUp, text: `${stock.symbol} trading ${stock.changePercent > 0 ? 'above' : 'below'} key moving averages. ${stock.changePercent > 0 ? 'Bullish' : 'Bearish'} trend intact with support at $${formatPrice(stock.price * 0.97)}.`, type: (stock.changePercent > 0 ? 'bullish' : 'bearish') as 'bullish' | 'bearish' },
+   452→      { icon: Zap, text: `Volume at ${Math.round((stock.volume / stock.avgVolume) * 100)}% of average. ${stock.volume > stock.avgVolume ? 'Elevated activity signals strong market interest.' : 'Below-average volume suggests consolidation phase.'}`, type: 'neutral' },
+   453→      { icon: BrainCircuit, text: `AI model assigns ${Math.round(55 + Math.random() * 25)}% confidence to ${stock.changePercent > 0 ? 'upside' : 'downside'} continuation based on multi-factor analysis.`, type: 'neutral' },
+   454→      { icon: AlertTriangle, text: `52-week range: $${formatPrice(stock.low52w)} — $${formatPrice(stock.high52w)}. Currently ${Math.round(((stock.price - stock.low52w) / (stock.high52w - stock.low52w)) * 100)}% within range.`, type: 'warning' },
+   455→    ];
+   456→
+   457→    return allInsights[selectedStock.symbol] || defaultInsights;
+   458→  }, [selectedStock.symbol]);
+   459→
+   460→  if (!mounted) {
+   461→    return <DashboardSkeleton />;
+   462→  }
+   463→
+   464→  return (
+   465→    <motion.div
+   466→      variants={containerVariants}
+   467→      initial="hidden"
+   468→      animate="show"
+   469→      className="space-y-5"
+   470→    >
+   471→      {/* ─── 1. Market Ticker Bar ──────────────────────────────────── */}
+   472→      <motion.div variants={itemVariants} className="glass-card overflow-hidden py-1">
+   473→        <div className="relative overflow-hidden">
+   474→          <div className="flex ticker-scroll" style={{ width: 'fit-content' }}>
+   475→            {[...tickerStocks, ...tickerStocks].map((s, i) => (
+   476→              <TickerItem
+   477→                key={`${s.symbol}-${i}`}
+   478→                symbol={s.symbol}
+   479→                price={s.price}
+   480→                changePercent={s.changePercent}
+   481→              />
+   482→            ))}
+   483→          </div>
+   484→          {/* Fade edges */}
+   485→          <div className="absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-[#0a0e1a] to-transparent pointer-events-none z-10" />
+   486→          <div className="absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-[#0a0e1a] to-transparent pointer-events-none z-10" />
+   487→        </div>
+   488→      </motion.div>
+   489→
+   490→      {/* ─── 2. KPI Cards Grid ─────────────────────────────────────── */}
+   491→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+   492→        <KPICard
+   493→          title="Stock Price"
+   494→          value={`$${kpiData.price}`}
+   495→          change={kpiData.changeAmount}
+   496→          changeType={kpiData.changeType}
+   497→          icon={DollarSign}
+   498→          iconColor="text-cyan-400"
+   499→          glowColor="glow-cyan"
+   500→          index={0}
+   501→          subtitle={kpiData.isReal ? `${selectedStock.symbol} · LIVE` : selectedStock.symbol}
+   502→        />
+   503→        <KPICard
+   504→          title="Today's Change"
+   505→          value={kpiData.change}
+   506→          icon={TrendingUp}
+   507→          iconColor="text-emerald-400"
+   508→          glowColor="glow-green"
+   509→          changeType={kpiData.changeType}
+   510→          index={1}
+   511→          subtitle="Daily performance"
+   512→        />
+   513→        <KPICard
+   514→          title="Volume"
+   515→          value={kpiData.volume}
+   516→          change="vs avg"
+   517→          changeType="neutral"
+   518→          icon={BarChart3}
+   519→          iconColor="text-purple-400"
+   520→          glowColor="glow-purple"
+   521→          index={2}
+   522→          subtitle={`Avg: ${formatNumber((STOCKS[selectedStock.symbol] || STOCKS.AAPL).avgVolume)}`}
+   523→        />
+   524→        <KPICard
+   525→          title="Market Cap"
+   526→          value={`$${kpiData.marketCap}`}
+   527→          icon={Building2}
+   528→          iconColor="text-blue-400"
+   529→          glowColor="glow-blue"
+   530→          index={3}
+   531→          subtitle={selectedStock.name}
+   532→        />
+   533→
+   534→        {/* Second row — Gauge / Circular progress cards */}
+   535→        <motion.div variants={itemVariants} className="glass-card p-5 glow-purple">
+   536→          <GaugeChart
+   537→            value={kpiData.volatilityScore}
+   538→            label="Volatility"
+   539→            size={140}
+   540→            strokeWidth={10}
+   541→            segments={[
+   542→              { from: 0, to: 30, color: '#10b981', label: 'Low' },
+   543→              { from: 30, to: 60, color: '#f59e0b', label: 'Medium' },
+   544→              { from: 60, to: 100, color: '#ef4444', label: 'High' },
+   545→            ]}
+   546→          />
+   547→        </motion.div>
+   548→
+   549→        <motion.div variants={itemVariants} className="glass-card p-5 glow-cyan">
+   550→          <CircularProgress
+   551→            value={kpiData.sentimentScore}
+   552→            label="Sentiment Score"
+   553→            size={120}
+   554→            strokeWidth={8}
+   555→            color="#06b6d4"
+   556→          />
+   557→        </motion.div>
+   558→
+   559→        <motion.div variants={itemVariants} className="glass-card p-5 glow-green">
+   560→          <CircularProgress
+   561→            value={kpiData.confidenceScore}
+   562→            label="Confidence Score"
+   563→            size={120}
+   564→            strokeWidth={8}
+   565→            color="#10b981"
+   566→          />
+   567→        </motion.div>
+   568→
+   569→        <motion.div variants={itemVariants} className="glass-card p-5 glow-red">
+   570→          <GaugeChart
+   571→            value={kpiData.riskLevel}
+   572→            label="Risk Level"
+   573→            size={140}
+   574→            strokeWidth={10}
+   575→            segments={[
+   576→              { from: 0, to: 35, color: '#10b981', label: 'Low Risk' },
+   577→              { from: 35, to: 65, color: '#f59e0b', label: 'Moderate' },
+   578→              { from: 65, to: 100, color: '#ef4444', label: 'High Risk' },
+   579→            ]}
+   580→          />
+   581→        </motion.div>
+   582→      </div>
+   583→
+   584→      {/* ─── 3. Two-Column: Chart + Side Panel ─────────────────────── */}
+   585→      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+   586→        {/* Left: Price Chart */}
+   587→        <motion.div variants={itemVariants} className="lg:col-span-2 glass-card p-5 glow-blue">
+   588→          <div className="flex items-center justify-between mb-4">
+   589→            <div>
+   590→              <h3 className="text-base font-bold text-white flex items-center gap-2">
+   591→                <CandlestickChart className="w-4 h-4 text-indigo-400" />
+   592→                {selectedStock.symbol} Price Action
+   593→              </h3>
+   594→              <p className="text-xs text-slate-500 mt-0.5">Last 30 trading days</p>
+   595→            </div>
+   596→            <div className="flex items-center gap-2">
+   597→              <Badge className="bg-indigo-500/15 text-indigo-400 border-0 text-[11px]">
+   598→                30D
+   599→              </Badge>
+   600→              <Badge className="bg-white/5 text-slate-400 border-0 text-[11px]">
+   601→                Daily
+   602→              </Badge>
+   603→            </div>
+   604→          </div>
+   605→          <div className="h-56">
+   606→            <ResponsiveContainer width="100%" height="100%">
+   607→              <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+   608→                <defs>
+   609→                  <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
+   610→                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.35} />
+   611→                    <stop offset="50%" stopColor="#6366f1" stopOpacity={0.1} />
+   612→                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+   613→                  </linearGradient>
+   614→                </defs>
+   615→                <XAxis
+   616→                  dataKey="date"
+   617→                  axisLine={false}
+   618→                  tickLine={false}
+   619→                  tick={{ fontSize: 10, fill: '#64748b' }}
+   620→                  interval="preserveStartEnd"
+   621→                />
+   622→                <YAxis
+   623→                  domain={['auto', 'auto']}
+   624→                  axisLine={false}
+   625→                  tickLine={false}
+   626→                  tick={{ fontSize: 10, fill: '#64748b' }}
+   627→                  tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+   628→                  width={50}
+   629→                />
+   630→                <Tooltip content={<ChartTooltip />} />
+   631→                <Area
+   632→                  type="monotone"
+   633→                  dataKey="close"
+   634→                  stroke="#6366f1"
+   635→                  strokeWidth={2}
+   636→                  fill="url(#priceGradient)"
+   637→                  dot={false}
+   638→                  activeDot={{
+   639→                    r: 4,
+   640→                    fill: '#6366f1',
+   641→                    stroke: '#fff',
+   642→                    strokeWidth: 2,
+   643→                  }}
+   644→                  animationDuration={1200}
+   645→                  animationEasing="ease-out"
+   646→                />
+   647→              </AreaChart>
+   648→            </ResponsiveContainer>
+   649→          </div>
+   650→        </motion.div>
+   651→
+   652→        {/* Right: Fear & Greed + Movers */}
+   653→        <motion.div variants={itemVariants} className="space-y-4">
+   654→          {/* Fear & Greed Gauge */}
+   655→          <div className="glass-card p-5 glow-purple">
+   656→            <FearGreedGauge value={fearGreedValue} />
+   657→          </div>
+   658→
+   659→          {/* Top Gainers */}
+   660→          <div className="glass-card p-4">
+   661→            <div className="flex items-center gap-2 mb-3">
+   662→              <div className="p-1.5 rounded-md bg-emerald-500/10">
+   663→                <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" />
+   664→              </div>
+   665→              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Top Gainers</h4>
+   666→            </div>
+   667→            <div className="space-y-1">
+   668→              {topGainers.map((s) => (
+   669→                <MoverItem
+   670→                  key={s.symbol}
+   671→                  symbol={s.symbol}
+   672→                  price={s.price}
+   673→                  changePercent={s.changePercent}
+   674→                />
+   675→              ))}
+   676→            </div>
+   677→          </div>
+   678→
+   679→          {/* Top Losers */}
+   680→          <div className="glass-card p-4">
+   681→            <div className="flex items-center gap-2 mb-3">
+   682→              <div className="p-1.5 rounded-md bg-red-500/10">
+   683→                <ArrowDownRight className="w-3.5 h-3.5 text-red-400" />
+   684→              </div>
+   685→              <h4 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Top Losers</h4>
+   686→            </div>
+   687→            <div className="space-y-1">
+   688→              {topLosers.map((s) => (
+   689→                <MoverItem
+   690→                  key={s.symbol}
+   691→                  symbol={s.symbol}
+   692→                  price={s.price}
+   693→                  changePercent={s.changePercent}
+   694→                />
+   695→              ))}
+   696→            </div>
+   697→          </div>
+   698→        </motion.div>
+   699→      </div>
+   700→
+   701→      {/* ─── 4. Bottom Section: AI Insights + Watchlist ────────────── */}
+   702→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   703→        {/* AI Insights */}
+   704→        <motion.div variants={itemVariants} className="glass-card p-5 glow-purple">
+   705→          <div className="flex items-center gap-2.5 mb-4">
+   706→            <div className="p-2 rounded-xl bg-purple-500/10">
+   707→              <Sparkles className="w-4 h-4 text-purple-400" />
+   708→            </div>
+   709→            <div>
+   710→              <h3 className="text-base font-bold text-white">AI Insights</h3>
+   711→              <p className="text-xs text-slate-500 mt-0.5">
+   712→                Powered by MarketLens AI — {selectedStock.symbol}
+   713→              </p>
+   714→            </div>
+   715→          </div>
+   716→          <motion.div
+   717→            variants={containerVariants}
+   718→            initial="hidden"
+   719→            animate="show"
+   720→            className="space-y-1 max-h-72 overflow-y-auto pr-1"
+   721→          >
+   722→            {insights.map((insight, i) => (
+   723→              <InsightItem key={i} {...insight} />
+   724→            ))}
+   725→          </motion.div>
+   726→        </motion.div>
+   727→
+   728→        {/* Watchlist */}
+   729→        <motion.div variants={itemVariants} className="glass-card p-5 glow-cyan">
+   730→          <div className="flex items-center gap-2.5 mb-4">
+   731→            <div className="p-2 rounded-xl bg-cyan-500/10">
+   732→              <Eye className="w-4 h-4 text-cyan-400" />
+   733→            </div>
+   734→            <div>
+   735→              <h3 className="text-base font-bold text-white">Watchlist</h3>
+   736→              <p className="text-xs text-slate-500 mt-0.5">
+   737→                {watchlist.length} symbols tracked
+   738→              </p>
+   739→            </div>
+   740→          </div>
+   741→
+   742→          <div className="max-h-72 overflow-y-auto">
+   743→            {/* Column headers */}
+   744→            <div className="flex items-center gap-3 px-3 py-2 mb-1 border-b border-white/5">
+   745→              <div className="w-16">
+   746→                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Symbol</span>
+   747→              </div>
+   748→              <div className="w-20">
+   749→                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Price</span>
+   750→              </div>
+   751→              <div className="w-20">
+   752→                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Change</span>
+   753→              </div>
+   754→              <div className="flex-1">
+   755→                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Trend</span>
+   756→              </div>
+   757→            </div>
+   758→
+   759→            <div className="space-y-0.5">
+   760→              {watchlist.map((symbol) => (
+   761→                <WatchlistRow key={symbol} symbol={symbol} />
+   762→              ))}
+   763→            </div>
+   764→          </div>
+   765→        </motion.div>
+   766→      </div>
+   767→    </motion.div>
+   768→  );
+   769→}

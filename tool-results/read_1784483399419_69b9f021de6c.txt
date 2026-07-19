@@ -1,0 +1,708 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState, useEffect } from 'react';
+     4→import { motion } from 'framer-motion';
+     5→import {
+     6→  LineChart,
+     7→  Line,
+     8→  XAxis,
+     9→  YAxis,
+    10→  Tooltip,
+    11→  ResponsiveContainer,
+    12→  ReferenceLine,
+    13→} from 'recharts';
+    14→import {
+    15→  BrainCircuit,
+    16→  TrendingUp,
+    17→  TrendingDown,
+    18→  ShieldAlert,
+    19→  Target,
+    20→  Activity,
+    21→  BarChart3,
+    22→  ChevronRight,
+    23→  Zap,
+    24→  AlertTriangle,
+    25→  CheckCircle2,
+    26→  Sparkles,
+    27→} from 'lucide-react';
+    28→import { useAppStore } from '@/lib/store';
+    29→import {
+    30→  STOCKS,
+    31→  generateStockData,
+    32→  formatPrice,
+    33→  formatPercent,
+    34→  type OHLCV,
+    35→} from '@/lib/stock-utils';
+    36→import { GaugeChart, CircularProgress } from '@/components/shared/gauge-chart';
+    37→import { AnimatedCounter, SectionHeader } from '@/components/shared/animated-counter';
+    38→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+    39→import { Badge } from '@/components/ui/badge';
+    40→import { Button } from '@/components/ui/button';
+    41→import { Progress } from '@/components/ui/progress';
+    42→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    43→import { cn } from '@/lib/utils';
+    44→
+    45→// ─── Seeded PRNG based on symbol ──────────────────────────────────────────
+    46→function seededRandom(seed: number): () => number {
+    47→  let s = seed;
+    48→  return () => {
+    49→    s = (s * 16807 + 0) % 2147483647;
+    50→    return (s - 1) / 2147483646;
+    51→  };
+    52→}
+    53→
+    54→function symbolSeed(symbol: string): number {
+    55→  return symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) + 42;
+    56→}
+    57→
+    58→// ─── Generate prediction data deterministically ───────────────────────────
+    59→interface PredictionData {
+    60→  bullishProb: number;
+    61→  bearishProb: number;
+    62→  volatilityScore: number;
+    63→  confidenceScore: number;
+    64→  upperBound: number;
+    65→  lowerBound: number;
+    66→  recommendation: 'BUY' | 'HOLD' | 'SELL';
+    67→  riskLevel: 'Low' | 'Medium' | 'High' | 'Extreme';
+    68→  accuracy: number;
+    69→  precision: number;
+    70→  recall: number;
+    71→  f1Score: number;
+    72→  rmse: number;
+    73→  mae: number;
+    74→}
+    75→
+    76→function generatePrediction(symbol: string, currentPrice: number): PredictionData {
+    77→  const rng = seededRandom(symbolSeed(symbol));
+    78→
+    79→  const bullishBase = 35 + rng() * 40;
+    80→  const bullishProb = parseFloat(bullishBase.toFixed(1));
+    81→  const bearishProb = parseFloat((100 - bullishProb).toFixed(1));
+    82→
+    83→  const volatilityScore = parseFloat((20 + rng() * 60).toFixed(1));
+    84→  const confidenceScore = parseFloat((65 + rng() * 30).toFixed(1));
+    85→
+    86→  const spread = currentPrice * (0.02 + rng() * 0.06);
+    87→  const upperBound = parseFloat((currentPrice + spread * (0.4 + rng() * 0.6)).toFixed(2));
+    88→  const lowerBound = parseFloat((currentPrice - spread * (0.4 + rng() * 0.6)).toFixed(2));
+    89→
+    90→  let recommendation: 'BUY' | 'HOLD' | 'SELL';
+    91→  if (bullishProb > 62) recommendation = 'BUY';
+    92→  else if (bullishProb < 38) recommendation = 'SELL';
+    93→  else recommendation = 'HOLD';
+    94→
+    95→  let riskLevel: 'Low' | 'Medium' | 'High' | 'Extreme';
+    96→  if (volatilityScore < 35) riskLevel = 'Low';
+    97→  else if (volatilityScore < 55) riskLevel = 'Medium';
+    98→  else if (volatilityScore < 75) riskLevel = 'High';
+    99→  else riskLevel = 'Extreme';
+   100→
+   101→  return {
+   102→    bullishProb,
+   103→    bearishProb,
+   104→    volatilityScore,
+   105→    confidenceScore,
+   106→    upperBound,
+   107→    lowerBound,
+   108→    recommendation,
+   109→    riskLevel,
+   110→    accuracy: parseFloat((82 + rng() * 12).toFixed(1)),
+   111→    precision: parseFloat((80 + rng() * 12).toFixed(1)),
+   112→    recall: parseFloat((83 + rng() * 12).toFixed(1)),
+   113→    f1Score: parseFloat((81 + rng() * 12).toFixed(1)),
+   114→    rmse: parseFloat((1.5 + rng() * 2.5).toFixed(2)),
+   115→    mae: parseFloat((1.0 + rng() * 2.0).toFixed(2)),
+   116→  };
+   117→}
+   118→
+   119→// ─── Historical accuracy chart data ──────────────────────────────────────
+   120→interface AccuracyPoint {
+   121→  date: string;
+   122→  predicted: number;
+   123→  actual: number;
+   124→}
+   125→
+   126→function generateAccuracyData(symbol: string, currentPrice: number): AccuracyPoint[] {
+   127→  const rng = seededRandom(symbolSeed(symbol) + 999);
+   128→  const data: AccuracyPoint[] = [];
+   129→  let price = currentPrice * 0.92;
+   130→  const now = new Date();
+   131→
+   132→  for (let i = 30; i >= 0; i--) {
+   133→    const date = new Date(now);
+   134→    date.setDate(date.getDate() - i);
+   135→    if (date.getDay() === 0 || date.getDay() === 6) continue;
+   136→
+   137→    const change = (rng() - 0.47) * 0.03;
+   138→    const actual = parseFloat((price * (1 + change)).toFixed(2));
+   139→    const noise = (rng() - 0.5) * currentPrice * 0.015;
+   140→    const predicted = parseFloat((actual + noise).toFixed(2));
+   141→
+   142→    data.push({
+   143→      date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+   144→      predicted,
+   145→      actual,
+   146→    });
+   147→    price = actual;
+   148→  }
+   149→  return data;
+   150→}
+   151→
+   152→// ─── AI Analysis text generator ──────────────────────────────────────────
+   153→function generateAnalysis(symbol: string, prediction: PredictionData): string[] {
+   154→  const stock = STOCKS[symbol];
+   155→  if (!stock) return ['Analysis unavailable for this symbol.'];
+   156→
+   157→  const name = stock.name;
+   158→  const sector = stock.sector;
+   159→  const price = stock.price;
+   160→  const pe = stock.pe;
+   161→
+   162→  const paragraphs: string[] = [];
+   163→
+   164→  // Paragraph 1: Overview and trend
+   165→  if (prediction.recommendation === 'BUY') {
+   166→    paragraphs.push(
+   167→      `${name} (${symbol}) is currently exhibiting strong bullish momentum within the ${sector} sector. The stock is trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}, and our AI model detects accumulating institutional interest supported by positive volume dynamics. The price action over the past several sessions suggests a constructive pattern with higher lows forming, indicating sustained buying pressure at key support levels. Multiple timeframe analysis confirms the bullish thesis, with the daily, weekly, and monthly charts all aligned in an upward trajectory.`
+   168→    );
+   169→  } else if (prediction.recommendation === 'SELL') {
+   170→    paragraphs.push(
+   171→      `${name} (${symbol}) is showing signs of distribution and weakening momentum within the ${sector} sector. Currently trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}, the stock faces headwinds from deteriorating technical structure and declining volume support. Our AI model has detected a shift from accumulation to distribution phases, with institutional selling pressure increasing over the past several sessions. The risk-reward profile at current levels does not favor long positions, and the probability of further downside is elevated.`
+   172→    );
+   173→  } else {
+   174→    paragraphs.push(
+   175→      `${name} (${symbol}) is in a consolidation phase within the ${sector} sector, trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}. The stock is caught between competing forces, with neither buyers nor sellers able to establish clear control. Our AI model indicates a period of price discovery where the stock is building a base ahead of the next directional move. Volume patterns suggest reduced participation, typical of a coiling formation that often precedes a significant breakout or breakdown.`
+   176→    );
+   177→  }
+   178→
+   179→  // Paragraph 2: Technical details
+   180→  paragraphs.push(
+   181→    `From a technical perspective, key moving averages are providing important context. The 20-day simple moving average and the 50-day SMA are currently positioned to offer dynamic support at critical price levels. The Relative Strength Index (RSI) reads at moderate levels, suggesting the stock is neither overbought nor oversold at this juncture. Bollinger Band analysis reveals that ${name} is trading within its normal volatility envelope, with the bands indicating a ${prediction.riskLevel.toLowerCase()} volatility regime. The Average True Range (ATR) confirms this assessment, with current readings ${prediction.volatilityScore > 50 ? 'above' : 'below'} historical averages.`
+   182→  );
+   183→
+   184→  // Paragraph 3: Pattern and support/resistance
+   185→  if (prediction.bullishProb > 55) {
+   186→    paragraphs.push(
+   187→      `Pattern recognition algorithms have identified a potential continuation setup, with the price holding above the $${prediction.lowerBound.toFixed(2)} support zone. Resistance is anticipated near the $${prediction.upperBound.toFixed(2)} level, a convergence of previous swing highs and the upper Bollinger Band. A decisive close above this resistance could trigger a rapid move higher, targeting the next major resistance cluster. The MACD histogram is showing ${prediction.bullishProb > 65 ? 'accelerating' : 'moderate'} bullish momentum, while the signal line crossover suggests the trend is intact. Our model assigns a ${prediction.confidenceScore.toFixed(0)}% confidence level to this assessment.`
+   188→    );
+   189→  } else if (prediction.bearishProb > 55) {
+   190→    paragraphs.push(
+   191→      `Pattern recognition indicates a potential breakdown scenario, with critical support at $${prediction.lowerBound.toFixed(2)} under pressure. If this level fails to hold, the next significant support zone lies approximately 3-5% lower. Resistance at $${prediction.upperBound.toFixed(2)} remains firm, and the inability to reclaim this level reinforces the bearish thesis. The MACD histogram is ${prediction.bearishProb > 65 ? 'strongly' : 'moderately'} negative, confirming downward momentum. Volume analysis shows distribution patterns consistent with institutional unwinding. Our model maintains a ${prediction.confidenceScore.toFixed(0)}% confidence level for this bearish outlook.`
+   192→    );
+   193→  } else {
+   194→    paragraphs.push(
+   195→      `Price is currently consolidating between the $${prediction.lowerBound.toFixed(2)} support and $${prediction.upperBound.toFixed(2)} resistance levels. This range-bound behavior suggests market participants are awaiting a catalyst for directional conviction. The MACD is near the zero line, indicating a balance between buying and selling pressure. A breakout above the upper range or breakdown below the lower range would provide the next clear signal. The current squeeze in Bollinger Bands often precedes an explosive move in either direction. Our model maintains ${prediction.confidenceScore.toFixed(0)}% confidence in the neutral assessment.`
+   196→    );
+   197→  }
+   198→
+   199→  // Paragraph 4: Risk assessment and outlook
+   200→  paragraphs.push(
+   201→    `Risk management considerations suggest that position sizing should account for the ${prediction.riskLevel.toLowerCase()} volatility environment currently exhibited by ${name}. The predicted price range of $${prediction.lowerBound.toFixed(2)} to $${prediction.upperBound.toFixed(2)} represents a potential ${((prediction.upperBound - prediction.lowerBound) / price * 100).toFixed(1)}% swing over the forecast horizon. Traders should maintain appropriate stop-loss levels and consider the stock's beta within the broader market context. The AI model's historical accuracy of ${prediction.accuracy.toFixed(1)}% for ${symbol} predictions provides a statistical edge, though no model guarantees future performance. Monitor volume patterns and sector rotation dynamics for early warning signs of trend changes.`
+   202→  );
+   203→
+   204→  return paragraphs;
+   205→}
+   206→
+   207→// ─── Animation variants ──────────────────────────────────────────────────
+   208→const containerVariants = {
+   209→  hidden: { opacity: 0 },
+   210→  show: {
+   211→    opacity: 1,
+   212→    transition: { staggerChildren: 0.07, delayChildren: 0.1 },
+   213→  },
+   214→};
+   215→
+   216→const itemVariants = {
+   217→  hidden: { opacity: 0, y: 20 },
+   218→  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
+   219→};
+   220→
+   221→// ─── Chart tooltip ───────────────────────────────────────────────────────
+   222→function AccuracyTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string; color: string }>; label?: string }) {
+   223→  if (!active || !payload?.length) return null;
+   224→  return (
+   225→    <div className="glass p-3 rounded-lg border border-indigo-500/20">
+   226→      <p className="text-xs text-slate-400 mb-2">{label}</p>
+   227→      {payload.map((entry) => (
+   228→        <div key={entry.dataKey} className="flex items-center gap-2 text-sm">
+   229→          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+   230→          <span className="text-slate-300 capitalize">{entry.dataKey}:</span>
+   231→          <span className="font-semibold text-white">${entry.value.toFixed(2)}</span>
+   232→        </div>
+   233→      ))}
+   234→    </div>
+   235→  );
+   236→}
+   237→
+   238→// ─── Recommendation color config ─────────────────────────────────────────
+   239→function getRecommendationStyle(rec: string) {
+   240→  switch (rec) {
+   241→    case 'BUY':
+   242→      return {
+   243→        gradient: 'from-emerald-500/30 via-emerald-500/10 to-cyan-500/30',
+   244→        border: 'border-emerald-500/40',
+   245→        badgeBg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+   246→        glow: 'shadow-[0_0_40px_rgba(16,185,129,0.15)]',
+   247→        icon: <TrendingUp className="w-6 h-6 text-emerald-400" />,
+   248→      };
+   249→    case 'SELL':
+   250→      return {
+   251→        gradient: 'from-red-500/30 via-red-500/10 to-orange-500/30',
+   252→        border: 'border-red-500/40',
+   253→        badgeBg: 'bg-red-500/20 text-red-400 border-red-500/30',
+   254→        glow: 'shadow-[0_0_40px_rgba(239,68,68,0.15)]',
+   255→        icon: <TrendingDown className="w-6 h-6 text-red-400" />,
+   256→      };
+   257→    default:
+   258→      return {
+   259→        gradient: 'from-amber-500/30 via-amber-500/10 to-yellow-500/30',
+   260→        border: 'border-amber-500/40',
+   261→        badgeBg: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+   262→        glow: 'shadow-[0_0_40px_rgba(245,158,11,0.15)]',
+   263→        icon: <Activity className="w-6 h-6 text-amber-400" />,
+   264→      };
+   265→  }
+   266→}
+   267→
+   268→function getRiskColor(risk: string) {
+   269→  switch (risk) {
+   270→    case 'Low': return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
+   271→    case 'Medium': return 'bg-amber-500/15 text-amber-400 border-amber-500/20';
+   272→    case 'High': return 'bg-orange-500/15 text-orange-400 border-orange-500/20';
+   273→    case 'Extreme': return 'bg-red-500/15 text-red-400 border-red-500/20';
+   274→    default: return 'bg-slate-500/15 text-slate-400 border-slate-500/20';
+   275→  }
+   276→}
+   277→
+   278→// ─── Main Component ──────────────────────────────────────────────────────
+   279→export function AIPredictionPage() {
+   280→  const { selectedStock, setSelectedStock } = useAppStore();
+   281→
+   282→  const symbol = selectedStock.symbol;
+   283→  const [isLoading, setIsLoading] = useState(true);
+   284→  const [dataSource, setDataSource] = useState<'real' | 'fallback' | 'local'>('local');
+   285→  const [realAnalysis, setRealAnalysis] = useState<string | null>(null);
+   286→
+   287→  // Fetch real AI prediction from API
+   288→  const [apiData, setApiData] = useState<Record<string, unknown> | null>(null);
+   289→
+   290→  useEffect(() => {
+   291→    let cancelled = false;
+   292→
+   293→    fetch(`/api/prediction?symbol=${symbol}`)
+   294→      .then((res) => res.json())
+   295→      .then((data) => {
+   296→        if (cancelled) return;
+   297→        setDataSource(data.dataSource || 'local');
+   298→        setApiData(data);
+   299→        if (data.analysis) setRealAnalysis(data.analysis);
+   300→      })
+   301→      .catch(() => setDataSource('local'))
+   302→      .finally(() => { if (!cancelled) setIsLoading(false); });
+   303→
+   304→    return () => { cancelled = true; };
+   305→  }, [symbol]);
+   306→
+   307→  const prediction = useMemo(() => {
+   308→    if (apiData?.prediction) {
+   309→      const p = apiData.prediction as Record<string, unknown>;
+   310→      return {
+   311→        bullishProb: (p.bullishProbability as number) || 50,
+   312→        bearishProb: (p.bearishProbability as number) || 50,
+   313→        volatilityScore: (p.volatility as number) || 30,
+   314→        confidenceScore: (p.confidence as number) || 75,
+   315→        upperBound: (p.upperBound as number) || 0,
+   316→        lowerBound: (p.lowerBound as number) || 0,
+   317→        recommendation: (p.recommendation as 'BUY' | 'HOLD' | 'SELL') || 'HOLD',
+   318→        riskLevel: (p.riskLevel as 'Low' | 'Medium' | 'High' | 'Extreme') || 'Medium',
+   319→        accuracy: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.accuracy || 85)),
+   320→        precision: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.precision || 83)),
+   321→        recall: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.recall || 86)),
+   322→        f1Score: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.f1Score || 84)),
+   323→        rmse: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.rmse || 2.0)),
+   324→        mae: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.mae || 1.5)),
+   325→      };
+   326→    }
+   327→    return generatePrediction(symbol, selectedStock.price);
+   328→  }, [symbol, selectedStock.price, apiData]);
+   329→
+   330→  const accuracyData = useMemo(() => {
+   331→    if (apiData?.actualHistory && apiData?.predictedHistory) {
+   332→      const actual = apiData.actualHistory as number[];
+   333→      const predicted = apiData.predictedHistory as number[];
+   334→      const len = Math.min(actual.length, predicted.length);
+   335→      return Array.from({ length: len }, (_, i) => ({
+   336→        date: `Day ${i + 1}`,
+   337→        actual: actual[i],
+   338→        predicted: predicted[i],
+   339→      }));
+   340→    }
+   341→    return generateAccuracyData(symbol, selectedStock.price);
+   342→  }, [symbol, selectedStock.price, apiData]);
+   343→
+   344→  const analysisTexts = useMemo(() => {
+   345→    if (realAnalysis && dataSource !== 'local') {
+   346→      return realAnalysis.split(/\n\n|\.(?=\s)/).filter((t) => t.trim().length > 10).map((t) => t.trim());
+   347→    }
+   348→    return generateAnalysis(symbol, prediction);
+   349→  }, [symbol, prediction, realAnalysis, dataSource]);
+   350→
+   351→  const recStyle = useMemo(() => getRecommendationStyle(prediction.recommendation), [prediction.recommendation]);
+   352→
+   353→  const handleStockChange = (value: string) => {
+   354→    const stock = STOCKS[value];
+   355→    if (stock) {
+   356→      setSelectedStock({
+   357→        symbol: stock.symbol,
+   358→        name: stock.name,
+   359→        price: stock.price,
+   360→        change: stock.change,
+   361→        changePercent: stock.changePercent,
+   362→        volume: stock.volume,
+   363→        marketCap: stock.marketCap,
+   364→      });
+   365→    }
+   366→  };
+   367→
+   368→  return (
+   369→    <motion.div
+   370→      variants={containerVariants}
+   371→      initial="hidden"
+   372→      animate="show"
+   373→      className="space-y-6"
+   374→    >
+   375→      {/* ── Header with Stock Selector ── */}
+   376→      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+   377→        <div className="flex items-center gap-3">
+   378→          <div className="p-2.5 rounded-xl bg-indigo-500/10">
+   379→            <BrainCircuit className="w-6 h-6 text-indigo-400" />
+   380→          </div>
+   381→          <div>
+   382→            <h1 className="text-2xl font-bold text-white">AI Prediction</h1>
+   383→            <p className="text-sm text-slate-400">Machine learning-powered price forecasts</p>
+   384→            {dataSource === 'real' && (
+   385→              <Badge className="text-[10px] bg-emerald-500/15 text-emerald-400 border-0 mt-1">AI POWERED</Badge>
+   386→            )}
+   387→          </div>
+   388→        </div>
+   389→        <Select value={symbol} onValueChange={handleStockChange}>
+   390→          <SelectTrigger className="w-[200px] bg-white/5 border-slate-700/50">
+   391→            <SelectValue />
+   392→          </SelectTrigger>
+   393→          <SelectContent>
+   394→            {Object.values(STOCKS).map((s) => (
+   395→              <SelectItem key={s.symbol} value={s.symbol}>
+   396→                {s.symbol} — {s.name}
+   397→              </SelectItem>
+   398→            ))}
+   399→          </SelectContent>
+   400→        </Select>
+   401→      </motion.div>
+   402→
+   403→      {/* ── Main Prediction Display ── */}
+   404→      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+   405→        {/* Bullish/Bearish Gauge */}
+   406→        <motion.div variants={itemVariants} className="glass-card p-6">
+   407→          <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   408→            <Target className="w-4 h-4 text-indigo-400" />
+   409→            Price Direction
+   410→          </h3>
+   411→          <div className="flex justify-center">
+   412→            <GaugeChart
+   413→              value={prediction.bullishProb}
+   414→              label=""
+   415→              size={180}
+   416→              strokeWidth={14}
+   417→              segments={[
+   418→                { from: 0, to: 38, color: '#ef4444', label: 'Bearish' },
+   419→                { from: 38, to: 62, color: '#f59e0b', label: 'Neutral' },
+   420→                { from: 62, to: 100, color: '#10b981', label: 'Bullish' },
+   421→              ]}
+   422→            />
+   423→          </div>
+   424→          <div className="mt-4 text-center">
+   425→            <span className={cn(
+   426→              'text-2xl font-bold',
+   427→              prediction.bullishProb > 62 ? 'text-emerald-400' : prediction.bullishProb < 38 ? 'text-red-400' : 'text-amber-400'
+   428→            )}>
+   429→              {prediction.bullishProb > 62 ? 'Bullish' : prediction.bullishProb < 38 ? 'Bearish' : 'Neutral'}
+   430→            </span>
+   431→            <p className="text-xs text-slate-500 mt-1">
+   432→              {prediction.bullishProb}% Bullish / {prediction.bearishProb}% Bearish
+   433→            </p>
+   434→          </div>
+   435→        </motion.div>
+   436→
+   437→        {/* Volatility + Confidence Gauges */}
+   438→        <motion.div variants={itemVariants} className="glass-card p-6">
+   439→          <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   440→            <Activity className="w-4 h-4 text-cyan-400" />
+   441→            Volatility & Confidence
+   442→          </h3>
+   443→          <div className="flex justify-center items-center gap-8">
+   444→            <GaugeChart
+   445→              value={prediction.volatilityScore}
+   446→              label="Volatility"
+   447→              size={130}
+   448→              strokeWidth={10}
+   449→              segments={[
+   450→                { from: 0, to: 35, color: '#10b981', label: 'Low' },
+   451→                { from: 35, to: 55, color: '#f59e0b', label: 'Medium' },
+   452→                { from: 55, to: 75, color: '#f97316', label: 'High' },
+   453→                { from: 75, to: 100, color: '#ef4444', label: 'Extreme' },
+   454→              ]}
+   455→            />
+   456→            <CircularProgress
+   457→              value={prediction.confidenceScore}
+   458→              label="Confidence"
+   459→              size={110}
+   460→              strokeWidth={8}
+   461→              color={prediction.confidenceScore > 80 ? '#10b981' : prediction.confidenceScore > 70 ? '#f59e0b' : '#6366f1'}
+   462→            />
+   463→          </div>
+   464→
+   465→          {/* Expected Price Range */}
+   466→          <div className="mt-6">
+   467→            <p className="text-xs text-slate-400 uppercase tracking-wider mb-3">Expected Price Range</p>
+   468→            <div className="relative h-10 bg-slate-800/50 rounded-lg overflow-hidden">
+   469→              <div
+   470→                className="absolute inset-y-0 bg-gradient-to-r from-indigo-500/20 to-cyan-500/20"
+   471→                style={{
+   472→                  left: `${Math.max(0, ((prediction.lowerBound - selectedStock.price * 0.95) / (selectedStock.price * 0.12)) * 100)}%`,
+   473→                  right: `${Math.max(0, ((selectedStock.price * 1.05 - prediction.upperBound) / (selectedStock.price * 0.12)) * 100)}%`,
+   474→                }}
+   475→              />
+   476→              <div className="absolute inset-y-0 left-1/2 w-px bg-slate-500/30" />
+   477→              <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 flex items-center">
+   478→                <div className="w-2 h-2 rounded-full bg-white shadow-lg shadow-white/30" />
+   479→              </div>
+   480→              <div className="absolute bottom-1 left-3 text-[10px] text-emerald-400 font-medium">
+   481→                ${prediction.lowerBound}
+   482→              </div>
+   483→              <div className="absolute bottom-1 right-3 text-[10px] text-cyan-400 font-medium">
+   484→                ${prediction.upperBound}
+   485→              </div>
+   486→              <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] text-slate-300 font-medium">
+   487→                ${formatPrice(selectedStock.price)}
+   488→              </div>
+   489→            </div>
+   490→          </div>
+   491→        </motion.div>
+   492→
+   493→        {/* Recommendation Card */}
+   494→        <motion.div
+   495→          variants={itemVariants}
+   496→          className={cn(
+   497→            'relative rounded-2xl p-6 overflow-hidden',
+   498→            'bg-gradient-to-br',
+   499→            recStyle.gradient,
+   500→            'border',
+   501→            recStyle.border,
+   502→            recStyle.glow
+   503→          )}
+   504→        >
+   505→          <div className="absolute inset-0 backdrop-blur-sm" />
+   506→          <div className="relative z-10">
+   507→            <h3 className="text-sm font-medium text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
+   508→              <Sparkles className="w-4 h-4" />
+   509→              AI Recommendation
+   510→            </h3>
+   511→
+   512→            <div className="flex items-center gap-4 mb-4">
+   513→              <div className="p-3 rounded-xl bg-white/5">
+   514→                {recStyle.icon}
+   515→              </div>
+   516→              <Badge className={cn('text-lg font-bold px-4 py-1.5 border', recStyle.badgeBg)}>
+   517→                {prediction.recommendation}
+   518→              </Badge>
+   519→            </div>
+   520→
+   521→            <p className="text-sm text-slate-300 leading-relaxed mb-4">
+   522→              {prediction.recommendation === 'BUY' && `Based on our AI model's analysis, ${symbol} shows strong potential for upward movement. Multiple indicators align with a bullish outlook.`}
+   523→              {prediction.recommendation === 'SELL' && `Our AI model suggests caution with ${symbol}. Current indicators point to potential downside risk. Consider reducing exposure.`}
+   524→              {prediction.recommendation === 'HOLD' && `${symbol} is in a consolidation phase. Our AI recommends maintaining current positions while waiting for a clearer directional signal.`}
+   525→            </p>
+   526→
+   527→            <div className="flex items-center justify-between">
+   528→              <div>
+   529→                <p className="text-xs text-slate-400">Risk Level</p>
+   530→                <Badge variant="outline" className={cn('mt-1 text-xs border', getRiskColor(prediction.riskLevel))}>
+   531→                  <ShieldAlert className="w-3 h-3 mr-1" />
+   532→                  {prediction.riskLevel}
+   533→                </Badge>
+   534→              </div>
+   535→              <div className="text-right">
+   536→                <p className="text-xs text-slate-400">Target Range</p>
+   537→                <p className="text-sm font-semibold text-white mt-1">
+   538→                  ${prediction.lowerBound} — ${prediction.upperBound}
+   539→                </p>
+   540→              </div>
+   541→            </div>
+   542→          </div>
+   543→        </motion.div>
+   544→      </div>
+   545→
+   546→      {/* ── Prediction Breakdown ── */}
+   547→      <motion.div variants={itemVariants} className="glass-card p-6">
+   548→        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   549→          <BarChart3 className="w-4 h-4 text-indigo-400" />
+   550→          Prediction Breakdown
+   551→        </h3>
+   552→        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+   553→          <div>
+   554→            <div className="flex items-center justify-between mb-2">
+   555→              <span className="text-sm font-medium text-emerald-400 flex items-center gap-1.5">
+   556→                <TrendingUp className="w-4 h-4" />
+   557→                Bullish Probability
+   558→              </span>
+   559→              <span className="text-sm font-bold text-emerald-400">{prediction.bullishProb}%</span>
+   560→            </div>
+   561→            <div className="relative h-3 bg-slate-800/50 rounded-full overflow-hidden">
+   562→              <motion.div
+   563→                className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
+   564→                initial={{ width: 0 }}
+   565→                animate={{ width: `${prediction.bullishProb}%` }}
+   566→                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.3 }}
+   567→                style={{ filter: 'drop-shadow(0 0 8px rgba(16, 185, 129, 0.4))' }}
+   568→              />
+   569→            </div>
+   570→          </div>
+   571→          <div>
+   572→            <div className="flex items-center justify-between mb-2">
+   573→              <span className="text-sm font-medium text-red-400 flex items-center gap-1.5">
+   574→                <TrendingDown className="w-4 h-4" />
+   575→                Bearish Probability
+   576→              </span>
+   577→              <span className="text-sm font-bold text-red-400">{prediction.bearishProb}%</span>
+   578→            </div>
+   579→            <div className="relative h-3 bg-slate-800/50 rounded-full overflow-hidden">
+   580→              <motion.div
+   581→                className="absolute inset-y-0 left-0 bg-gradient-to-r from-red-500 to-red-400 rounded-full"
+   582→                initial={{ width: 0 }}
+   583→                animate={{ width: `${prediction.bearishProb}%` }}
+   584→                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.4 }}
+   585→                style={{ filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.4))' }}
+   586→              />
+   587→            </div>
+   588→          </div>
+   589→        </div>
+   590→      </motion.div>
+   591→
+   592→      {/* ── AI Analysis Text ── */}
+   593→      <motion.div variants={itemVariants} className="glass-card p-6">
+   594→        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   595→          <BrainCircuit className="w-4 h-4 text-purple-400" />
+   596→          AI Analysis Report
+   597→          <Badge variant="outline" className="ml-auto text-[10px] border-purple-500/30 text-purple-400">
+   598→            <Zap className="w-3 h-3 mr-1" />
+   599→            {dataSource === 'real' ? 'Live AI' : 'Generated'}
+   600→          </Badge>
+   601→        </h3>
+   602→        <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+   603→          {analysisTexts.map((text, i) => (
+   604→            <motion.p
+   605→              key={i}
+   606→              initial={{ opacity: 0, x: -10 }}
+   607→              animate={{ opacity: 1, x: 0 }}
+   608→              transition={{ duration: 0.4, delay: 0.5 + i * 0.15 }}
+   609→              className="text-sm text-slate-300 leading-relaxed"
+   610→            >
+   611→              {text}
+   612→            </motion.p>
+   613→          ))}
+   614→        </div>
+   615→      </motion.div>
+   616→
+   617→      {/* ── Historical Prediction Accuracy ── */}
+   618→      <motion.div variants={itemVariants} className="glass-card p-6">
+   619→        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   620→          <CheckCircle2 className="w-4 h-4 text-cyan-400" />
+   621→          Historical Prediction Accuracy — Last 30 Days
+   622→        </h3>
+   623→        <div className="h-[300px] w-full">
+   624→          <ResponsiveContainer width="100%" height="100%">
+   625→            <LineChart data={accuracyData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+   626→              <XAxis
+   627→                dataKey="date"
+   628→                tick={{ fill: '#64748b', fontSize: 11 }}
+   629→                tickLine={false}
+   630→                axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
+   631→                interval="preserveStartEnd"
+   632→              />
+   633→              <YAxis
+   634→                tick={{ fill: '#64748b', fontSize: 11 }}
+   635→                tickLine={false}
+   636→                axisLine={false}
+   637→                tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+   638→                domain={['auto', 'auto']}
+   639→              />
+   640→              <Tooltip content={<AccuracyTooltip />} />
+   641→              <Line
+   642→                type="monotone"
+   643→                dataKey="actual"
+   644→                stroke="#10b981"
+   645→                strokeWidth={2}
+   646→                dot={false}
+   647→                activeDot={{ r: 4, fill: '#10b981' }}
+   648→                name="Actual"
+   649→              />
+   650→              <Line
+   651→                type="monotone"
+   652→                dataKey="predicted"
+   653→                stroke="#6366f1"
+   654→                strokeWidth={2}
+   655→                strokeDasharray="6 3"
+   656→                dot={false}
+   657→                activeDot={{ r: 4, fill: '#6366f1' }}
+   658→                name="Predicted"
+   659→              />
+   660→            </LineChart>
+   661→          </ResponsiveContainer>
+   662→        </div>
+   663→        <div className="flex items-center justify-center gap-6 mt-2">
+   664→          <div className="flex items-center gap-2 text-xs text-slate-400">
+   665→            <div className="w-4 h-0.5 bg-emerald-500 rounded" />
+   666→            Actual Price
+   667→          </div>
+   668→          <div className="flex items-center gap-2 text-xs text-slate-400">
+   669→            <div className="w-4 h-0.5 bg-indigo-500 rounded border-dashed" style={{ borderTop: '2px dashed #6366f1' }} />
+   670→            Predicted Price
+   671→          </div>
+   672→        </div>
+   673→      </motion.div>
+   674→
+   675→      {/* ── Model Performance Metrics ── */}
+   676→      <motion.div variants={itemVariants}>
+   677→        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+   678→          <BarChart3 className="w-4 h-4 text-amber-400" />
+   679→          Model Performance Metrics
+   680→        </h3>
+   681→        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+   682→          {[
+   683→            { label: 'Accuracy', value: `${prediction.accuracy}%`, icon: Target, color: 'text-emerald-400', bgColor: 'bg-emerald-500/10' },
+   684→            { label: 'Precision', value: `${prediction.precision}%`, icon: Zap, color: 'text-cyan-400', bgColor: 'bg-cyan-500/10' },
+   685→            { label: 'Recall', value: `${prediction.recall}%`, icon: Activity, color: 'text-indigo-400', bgColor: 'bg-indigo-500/10' },
+   686→            { label: 'F1-Score', value: `${prediction.f1Score}%`, icon: CheckCircle2, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
+   687→            { label: 'RMSE', value: prediction.rmse.toFixed(2), icon: AlertTriangle, color: 'text-amber-400', bgColor: 'bg-amber-500/10' },
+   688→            { label: 'MAE', value: prediction.mae.toFixed(2), icon: BarChart3, color: 'text-rose-400', bgColor: 'bg-rose-500/10' },
+   689→          ].map((metric, i) => (
+   690→            <motion.div
+   691→              key={metric.label}
+   692→              initial={{ opacity: 0, scale: 0.9 }}
+   693→              animate={{ opacity: 1, scale: 1 }}
+   694→              transition={{ duration: 0.3, delay: 0.6 + i * 0.05 }}
+   695→              className="glass-card p-4 text-center group"
+   696→            >
+   697→              <div className={cn('inline-flex p-2 rounded-lg mb-2', metric.bgColor)}>
+   698→                <metric.icon className={cn('w-4 h-4', metric.color)} />
+   699→              </div>
+   700→              <p className="text-xl font-bold text-white">{metric.value}</p>
+   701→              <p className="text-[11px] text-slate-500 uppercase tracking-wider mt-0.5">{metric.label}</p>
+   702→            </motion.div>
+   703→          ))}
+   704→        </div>
+   705→      </motion.div>
+   706→    </motion.div>
+   707→  );
+   708→}

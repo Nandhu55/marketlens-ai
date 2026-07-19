@@ -1,0 +1,1022 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+     4→import { motion } from 'framer-motion';
+     5→import {
+     6→  LineChart,
+     7→  Line,
+     8→  AreaChart,
+     9→  Area,
+    10→  BarChart,
+    11→  Bar,
+    12→  XAxis,
+    13→  YAxis,
+    14→  Tooltip,
+    15→  ResponsiveContainer,
+    16→  ReferenceLine,
+    17→  CartesianGrid,
+    18→} from 'recharts';
+    19→import {
+    20→  Activity,
+    21→  TrendingUp,
+    22→  TrendingDown,
+    23→  BarChart3,
+    24→  Waves,
+    25→  Zap,
+    26→  Target,
+    27→  ArrowUpRight,
+    28→  ArrowDownRight,
+    29→  Minus,
+    30→  ChevronRight,
+    31→  Volume2,
+    32→  Layers,
+    33→  Cpu,
+    34→} from 'lucide-react';
+    35→import { useAppStore } from '@/lib/store';
+    36→import {
+    37→  STOCKS,
+    38→  generateStockData,
+    39→  calculateSMA,
+    40→  calculateEMA,
+    41→  calculateRSI,
+    42→  calculateMACD,
+    43→  calculateBollingerBands,
+    44→  calculateATR,
+    45→  formatNumber,
+    46→  formatPrice,
+    47→  getChangeColor,
+    48→  type OHLCV,
+    49→} from '@/lib/stock-utils';
+    50→import { CircularProgress } from '@/components/shared/gauge-chart';
+    51→import { AnimatedCounter, SectionHeader } from '@/components/shared/animated-counter';
+    52→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+    53→import { Badge } from '@/components/ui/badge';
+    54→import { Button } from '@/components/ui/button';
+    55→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    56→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    57→import { cn } from '@/lib/utils';
+    58→
+    59→// ─── Stochastic Oscillator ────────────────────────────────────────────────
+    60→function calculateStochastic(data: OHLCV[], kPeriod: number = 14, dPeriod: number = 3): { k: number[]; d: number[] } {
+    61→  const kValues: number[] = [];
+    62→
+    63→  for (let i = 0; i < data.length; i++) {
+    64→    if (i < kPeriod - 1) {
+    65→      kValues.push(NaN);
+    66→      continue;
+    67→    }
+    68→    const slice = data.slice(i - kPeriod + 1, i + 1);
+    69→    const highest = Math.max(...slice.map((d) => d.high));
+    70→    const lowest = Math.min(...slice.map((d) => d.low));
+    71→    const range = highest - lowest;
+    72→    const k = range === 0 ? 50 : ((data[i].close - lowest) / range) * 100;
+    73→    kValues.push(parseFloat(k.toFixed(2)));
+    74→  }
+    75→
+    76→  const dValues = calculateSMA(kValues.filter((v) => !isNaN(v)), dPeriod);
+    77→  const dPadded: number[] = new Array(kValues.length - dValues.length).fill(NaN).concat(dValues);
+    78→
+    79→  return { k: kValues, d: dPadded };
+    80→}
+    81→
+    82→// ─── Time range config ────────────────────────────────────────────────────
+    83→type TimeRange = '1M' | '3M' | '6M' | '1Y';
+    84→const TIME_RANGES: { label: TimeRange; days: number }[] = [
+    85→  { label: '1M', days: 30 },
+    86→  { label: '3M', days: 90 },
+    87→  { label: '6M', days: 180 },
+    88→  { label: '1Y', days: 365 },
+    89→];
+    90→
+    91→// ─── Animation variants ──────────────────────────────────────────────────
+    92→const containerVariants = {
+    93→  hidden: { opacity: 0 },
+    94→  show: {
+    95→    opacity: 1,
+    96→    transition: { staggerChildren: 0.06, delayChildren: 0.1 },
+    97→  },
+    98→};
+    99→
+   100→const itemVariants = {
+   101→  hidden: { opacity: 0, y: 20 },
+   102→  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
+   103→};
+   104→
+   105→// ─── Chart Tooltip ────────────────────────────────────────────────────────
+   106→function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string; color: string }>; label?: string }) {
+   107→  if (!active || !payload?.length) return null;
+   108→  return (
+   109→    <div className="glass p-3 rounded-lg border border-indigo-500/20 min-w-[140px]">
+   110→      <p className="text-xs text-slate-400 mb-2">{label}</p>
+   111→      {payload.map((entry) => (
+   112→        <div key={entry.dataKey} className="flex items-center gap-2 text-sm mb-0.5 last:mb-0">
+   113→          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
+   114→          <span className="text-slate-400 capitalize text-xs">{entry.dataKey}:</span>
+   115→          <span className="font-semibold text-white text-xs">{typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}</span>
+   116→        </div>
+   117→      ))}
+   118→    </div>
+   119→  );
+   120→}
+   121→
+   122→// ─── Mini MACD Chart ──────────────────────────────────────────────────────
+   123→function MiniMACDChart({ data }: { data: Array<{ date: string; histogram: number }> }) {
+   124→  const last10 = data.slice(-10);
+   125→  return (
+   126→    <div className="h-12 w-full mt-2">
+   127→      <ResponsiveContainer width="100%" height="100%">
+   128→        <BarChart data={last10} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+   129→          <Bar
+   130→            dataKey="histogram"
+   131→            radius={[2, 2, 0, 0]}
+   132→            fill="#6366f1"
+   133→          />
+   134→        </BarChart>
+   135→      </ResponsiveContainer>
+   136→    </div>
+   137→  );
+   138→}
+   139→
+   140→// ─── Indicator Signal Badge ───────────────────────────────────────────────
+   141→function SignalBadge({ signal, type }: { signal: string; type: 'bullish' | 'bearish' | 'neutral' }) {
+   142→  const colors = {
+   143→    bullish: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+   144→    bearish: 'bg-red-500/15 text-red-400 border-red-500/20',
+   145→    neutral: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+   146→  };
+   147→  return (
+   148→    <Badge variant="outline" className={cn('text-[10px] border', colors[type])}>
+   149→      {signal}
+   150→    </Badge>
+   151→  );
+   152→}
+   153→
+   154→// ─── Main Component ──────────────────────────────────────────────────────
+   155→export function TechnicalAnalysisPage() {
+   156→  const { selectedStock, setSelectedStock } = useAppStore();
+   157→  const [timeRange, setTimeRange] = useState<TimeRange>('3M');
+   158→
+   159→  const symbol = selectedStock.symbol;
+   160→  const days = TIME_RANGES.find((r) => r.label === timeRange)?.days ?? 90;
+   161→
+   162→  // Generate raw OHLCV data
+   163→  const rawData = useMemo(() => generateStockData(symbol, days), [symbol, days]);
+   164→  const closes = useMemo(() => rawData.map((d) => d.close), [rawData]);
+   165→
+   166→  // ── Calculate all indicators ──
+   167→  const rsiValues = useMemo(() => calculateRSI(closes, 14), [closes]);
+   168→  const macdResult = useMemo(() => calculateMACD(closes), [closes]);
+   169→  const sma20 = useMemo(() => calculateSMA(closes, 20), [closes]);
+   170→  const sma50 = useMemo(() => calculateSMA(closes, 50), [closes]);
+   171→  const ema12 = useMemo(() => calculateEMA(closes, 12), [closes]);
+   172→  const ema26 = useMemo(() => calculateEMA(closes, 26), [closes]);
+   173→  const bbResult = useMemo(() => calculateBollingerBands(closes, 20, 2), [closes]);
+   174→  const atrValues = useMemo(() => calculateATR(rawData, 14), [rawData]);
+   175→  const stochasticResult = useMemo(() => calculateStochastic(rawData), [rawData]);
+   176→
+   177→  // Current (last valid) values
+   178→  const currentRSI = useMemo(() => rsiValues.filter((v) => !isNaN(v)).pop() ?? 50, [rsiValues]);
+   179→
+   180→  const currentMACD = useMemo(() => {
+   181→    const valid = macdResult.macd.filter((v) => !isNaN(v));
+   182→    return valid[valid.length - 1] ?? 0;
+   183→  }, [macdResult.macd]);
+   184→
+   185→  const currentSignal = useMemo(() => {
+   186→    const valid = macdResult.signal.filter((v) => !isNaN(v));
+   187→    return valid[valid.length - 1] ?? 0;
+   188→  }, [macdResult.signal]);
+   189→
+   190→  const currentHistogram = useMemo(() => {
+   191→    const valid = macdResult.histogram.filter((v) => !isNaN(v));
+   192→    return valid[valid.length - 1] ?? 0;
+   193→  }, [macdResult.histogram]);
+   194→
+   195→  const currentSMA20 = useMemo(() => sma20.filter((v) => !isNaN(v)).pop() ?? 0, [sma20]);
+   196→  const currentSMA50 = useMemo(() => sma50.filter((v) => !isNaN(v)).pop() ?? 0, [sma50]);
+   197→  const currentEMA12 = useMemo(() => ema12.filter((v) => !isNaN(v)).pop() ?? 0, [ema12]);
+   198→  const currentEMA26 = useMemo(() => ema26.filter((v) => !isNaN(v)).pop() ?? 0, [ema26]);
+   199→
+   200→  const currentBBUpper = useMemo(() => bbResult.upper.filter((v) => !isNaN(v)).pop() ?? 0, [bbResult.upper]);
+   201→  const currentBBMiddle = useMemo(() => bbResult.middle.filter((v) => !isNaN(v)).pop() ?? 0, [bbResult.middle]);
+   202→  const currentBBLower = useMemo(() => bbResult.lower.filter((v) => !isNaN(v)).pop() ?? 0, [bbResult.lower]);
+   203→  const bbWidth = useMemo(() => {
+   204→    if (currentBBMiddle === 0) return 0;
+   205→    return ((currentBBUpper - currentBBLower) / currentBBMiddle) * 100;
+   206→  }, [currentBBUpper, currentBBLower, currentBBMiddle]);
+   207→
+   208→  const currentATR = useMemo(() => atrValues.filter((v) => !isNaN(v)).pop() ?? 0, [atrValues]);
+   209→
+   210→  const currentStochK = useMemo(() => stochasticResult.k.filter((v) => !isNaN(v)).pop() ?? 50, [stochasticResult.k]);
+   211→  const currentStochD = useMemo(() => stochasticResult.d.filter((v) => !isNaN(v)).pop() ?? 50, [stochasticResult.d]);
+   212→
+   213→  const currentVolume = useMemo(() => rawData[rawData.length - 1]?.volume ?? 0, [rawData]);
+   214→  const avgVolume = useMemo(() => {
+   215→    const recent = rawData.slice(-20);
+   216→    return recent.reduce((sum, d) => sum + d.volume, 0) / recent.length;
+   217→  }, [rawData]);
+   218→
+   219→  const currentPrice = selectedStock.price;
+   220→
+   221→  // ── Determine signals ──
+   222→  const rsiSignal = useMemo(() => {
+   223→    if (currentRSI > 70) return { text: 'Overbought', type: 'bearish' as const };
+   224→    if (currentRSI < 30) return { text: 'Oversold', type: 'bullish' as const };
+   225→    if (currentRSI > 55) return { text: 'Bullish', type: 'bullish' as const };
+   226→    if (currentRSI < 45) return { text: 'Bearish', type: 'bearish' as const };
+   227→    return { text: 'Neutral', type: 'neutral' as const };
+   228→  }, [currentRSI]);
+   229→
+   230→  const macdSignal = useMemo(() => {
+   231→    if (currentMACD > 0 && currentHistogram > 0) return { text: 'Bullish', type: 'bullish' as const };
+   232→    if (currentMACD < 0 && currentHistogram < 0) return { text: 'Bearish', type: 'bearish' as const };
+   233→    if (currentMACD > 0 && currentHistogram < 0) return { text: 'Weakening', type: 'neutral' as const };
+   234→    return { text: 'Strengthening', type: 'neutral' as const };
+   235→  }, [currentMACD, currentHistogram]);
+   236→
+   237→  const smaSignal = useMemo(() => {
+   238→    if (currentSMA20 > currentSMA50) return { text: 'Golden Cross', type: 'bullish' as const };
+   239→    if (currentSMA20 < currentSMA50) return { text: 'Death Cross', type: 'bearish' as const };
+   240→    return { text: 'None', type: 'neutral' as const };
+   241→  }, [currentSMA20, currentSMA50]);
+   242→
+   243→  const emaTrend = useMemo(() => {
+   244→    if (currentEMA12 > currentEMA26) return { text: 'Bullish Trend', type: 'bullish' as const };
+   245→    if (currentEMA12 < currentEMA26) return { text: 'Bearish Trend', type: 'bearish' as const };
+   246→    return { text: 'Sideways', type: 'neutral' as const };
+   247→  }, [currentEMA12, currentEMA26]);
+   248→
+   249→  const stochSignal = useMemo(() => {
+   250→    if (currentStochK > 80) return { text: 'Overbought', type: 'bearish' as const };
+   251→    if (currentStochK < 20) return { text: 'Oversold', type: 'bullish' as const };
+   252→    if (currentStochK > currentStochD) return { text: 'Bullish', type: 'bullish' as const };
+   253→    return { text: 'Bearish', type: 'bearish' as const };
+   254→  }, [currentStochK, currentStochD]);
+   255→
+   256→  const atrInterpretation = useMemo(() => {
+   257→    const atrPercent = (currentATR / currentPrice) * 100;
+   258→    if (atrPercent > 3) return 'Very High Volatility';
+   259→    if (atrPercent > 2) return 'High Volatility';
+   260→    if (atrPercent > 1) return 'Moderate Volatility';
+   261→    return 'Low Volatility';
+   262→  }, [currentATR, currentPrice]);
+   263→
+   264→  const volumeSignal = useMemo(() => {
+   265→    const ratio = currentVolume / avgVolume;
+   266→    if (ratio > 1.5) return { text: 'High Volume Spike', type: 'bullish' as const };
+   267→    if (ratio > 1.2) return { text: 'Above Average', type: 'neutral' as const };
+   268→    if (ratio < 0.7) return { text: 'Below Average', type: 'neutral' as const };
+   269→    return { text: 'Normal', type: 'neutral' as const };
+   270→  }, [currentVolume, avgVolume]);
+   271→
+   272→  // ── Signal Summary ──
+   273→  const allSignals = useMemo(() => [
+   274→    rsiSignal,
+   275→    macdSignal,
+   276→    smaSignal,
+   277→    emaTrend,
+   278→    stochSignal,
+   279→  ], [rsiSignal, macdSignal, smaSignal, emaTrend, stochSignal]);
+   280→
+   281→  const bullCount = useMemo(() => allSignals.filter((s) => s.type === 'bullish').length, [allSignals]);
+   282→  const bearCount = useMemo(() => allSignals.filter((s) => s.type === 'bearish').length, [allSignals]);
+   283→  const neutralCount = useMemo(() => allSignals.filter((s) => s.type === 'neutral').length, [allSignals]);
+   284→
+   285→  const overallSignal = useMemo(() => {
+   286→    if (bullCount > bearCount + 1) return { text: 'Bullish', type: 'bullish' as const };
+   287→    if (bearCount > bullCount + 1) return { text: 'Bearish', type: 'bearish' as const };
+   288→    return { text: 'Neutral', type: 'neutral' as const };
+   289→  }, [bullCount, bearCount]);
+   290→
+   291→  // ── Chart data ──
+   292→  const rsiChartData = useMemo(() => {
+   293→    return rawData.map((d, i) => ({
+   294→      date: d.date,
+   295→      rsi: rsiValues[i],
+   296→    }));
+   297→  }, [rawData, rsiValues]);
+   298→
+   299→  const macdChartData = useMemo(() => {
+   300→    return rawData.map((d, i) => ({
+   301→      date: d.date,
+   302→      macd: macdResult.macd[i],
+   303→      signal: macdResult.signal[i],
+   304→      histogram: macdResult.histogram[i],
+   305→    })).filter((d) => !isNaN(d.macd) && !isNaN(d.signal));
+   306→  }, [rawData, macdResult]);
+   307→
+   308→  const miniMacdData = useMemo(() => {
+   309→    return macdChartData.map((d) => ({
+   310→      date: d.date,
+   311→      histogram: d.histogram ?? 0,
+   312→    }));
+   313→  }, [macdChartData]);
+   314→
+   315→  const bbChartData = useMemo(() => {
+   316→    return rawData.map((d, i) => ({
+   317→      date: d.date,
+   318→      price: d.close,
+   319→      upper: bbResult.upper[i],
+   320→      middle: bbResult.middle[i],
+   321→      lower: bbResult.lower[i],
+   322→    })).filter((d) => !isNaN(d.upper));
+   323→  }, [rawData, bbResult]);
+   324→
+   325→  const volumeChartData = useMemo(() => {
+   326→    return rawData.map((d) => ({
+   327→      date: d.date,
+   328→      volume: d.volume,
+   329→      price: d.close,
+   330→    }));
+   331→  }, [rawData]);
+   332→
+   333→  const handleStockChange = useCallback((value: string) => {
+   334→    const stock = STOCKS[value];
+   335→    if (stock) {
+   336→      setSelectedStock({
+   337→        symbol: stock.symbol,
+   338→        name: stock.name,
+   339→        price: stock.price,
+   340→        change: stock.change,
+   341→        changePercent: stock.changePercent,
+   342→        volume: stock.volume,
+   343→        marketCap: stock.marketCap,
+   344→      });
+   345→    }
+   346→  }, [setSelectedStock]);
+   347→
+   348→  return (
+   349→    <motion.div
+   350→      variants={containerVariants}
+   351→      initial="hidden"
+   352→      animate="show"
+   353→      className="space-y-6"
+   354→    >
+   355→      {/* ── Header ── */}
+   356→      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+   357→        <div className="flex items-center gap-3">
+   358→          <div className="p-2.5 rounded-xl bg-cyan-500/10">
+   359→            <Activity className="w-6 h-6 text-cyan-400" />
+   360→          </div>
+   361→          <div>
+   362→            <h1 className="text-2xl font-bold text-white">Technical Analysis</h1>
+   363→            <p className="text-sm text-slate-400">Comprehensive indicator breakdown and charts</p>
+   364→          </div>
+   365→        </div>
+   366→        <div className="flex items-center gap-3">
+   367→          <Select value={symbol} onValueChange={handleStockChange}>
+   368→            <SelectTrigger className="w-[200px] bg-white/5 border-slate-700/50">
+   369→              <SelectValue />
+   370→            </SelectTrigger>
+   371→            <SelectContent>
+   372→              {Object.values(STOCKS).map((s) => (
+   373→                <SelectItem key={s.symbol} value={s.symbol}>
+   374→                  {s.symbol} — {s.name}
+   375→                </SelectItem>
+   376→              ))}
+   377→            </SelectContent>
+   378→          </Select>
+   379→          <div className="flex gap-1 bg-white/5 rounded-lg p-1">
+   380→            {TIME_RANGES.map((range) => (
+   381→              <Button
+   382→                key={range.label}
+   383→                variant="ghost"
+   384→                size="sm"
+   385→                onClick={() => setTimeRange(range.label)}
+   386→                className={cn(
+   387→                  'h-7 px-3 text-xs font-medium rounded-md',
+   388→                  timeRange === range.label
+   389→                    ? 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/25'
+   390→                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+   391→                )}
+   392→              >
+   393→                {range.label}
+   394→              </Button>
+   395→            ))}
+   396→          </div>
+   397→        </div>
+   398→      </motion.div>
+   399→
+   400→      {/* ── Signal Summary ── */}
+   401→      <motion.div variants={itemVariants} className="glass-card p-5">
+   402→        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+   403→          <div className="flex items-center gap-4">
+   404→            <div>
+   405→              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Overall Signal</p>
+   406→              <div className="flex items-center gap-2">
+   407→                {overallSignal.type === 'bullish' && <TrendingUp className="w-5 h-5 text-emerald-400" />}
+   408→                {overallSignal.type === 'bearish' && <TrendingDown className="w-5 h-5 text-red-400" />}
+   409→                {overallSignal.type === 'neutral' && <Minus className="w-5 h-5 text-amber-400" />}
+   410→                <span className={cn(
+   411→                  'text-lg font-bold',
+   412→                  overallSignal.type === 'bullish' && 'text-emerald-400',
+   413→                  overallSignal.type === 'bearish' && 'text-red-400',
+   414→                  overallSignal.type === 'neutral' && 'text-amber-400',
+   415→                )}>
+   416→                  {overallSignal.text}
+   417→                </span>
+   418→              </div>
+   419→            </div>
+   420→            <div className="h-10 w-px bg-slate-700/50 hidden sm:block" />
+   421→            <div className="flex items-center gap-4 text-sm">
+   422→              <span className="text-emerald-400 font-medium">{bullCount} Bullish</span>
+   423→              <span className="text-amber-400 font-medium">{neutralCount} Neutral</span>
+   424→              <span className="text-red-400 font-medium">{bearCount} Bearish</span>
+   425→            </div>
+   426→          </div>
+   427→          <div className="flex items-center gap-2">
+   428→            {allSignals.map((s, i) => (
+   429→              <div
+   430→                key={i}
+   431→                className={cn(
+   432→                  'w-3 h-3 rounded-full transition-colors',
+   433→                  s.type === 'bullish' && 'bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.5)]',
+   434→                  s.type === 'bearish' && 'bg-red-400 shadow-[0_0_6px_rgba(239,68,68,0.5)]',
+   435→                  s.type === 'neutral' && 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.5)]',
+   436→                )}
+   437→                title={s.text}
+   438→              />
+   439→            ))}
+   440→            <span className="text-xs text-slate-500 ml-1">
+   441→              {['RSI', 'MACD', 'SMA', 'EMA', 'Stoch'].map((name, i) => (
+   442→                <span key={name} className="mr-2">
+   443→                  {name}
+   444→                </span>
+   445→              ))}
+   446→            </span>
+   447→          </div>
+   448→        </div>
+   449→      </motion.div>
+   450→
+   451→      {/* ── Technical Indicators Grid ── */}
+   452→      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+   453→        {/* RSI Card */}
+   454→        <motion.div variants={itemVariants} className="glass-card p-5">
+   455→          <div className="flex items-center justify-between mb-3">
+   456→            <h3 className="text-sm font-medium text-slate-300">RSI (14)</h3>
+   457→            <SignalBadge signal={rsiSignal.text} type={rsiSignal.type} />
+   458→          </div>
+   459→          <div className="flex items-center gap-4">
+   460→            <CircularProgress
+   461→              value={currentRSI}
+   462→              label=""
+   463→              size={90}
+   464→              strokeWidth={7}
+   465→              color={currentRSI > 70 ? '#ef4444' : currentRSI < 30 ? '#10b981' : '#6366f1'}
+   466→            />
+   467→            <div>
+   468→              <p className={cn(
+   469→                'text-2xl font-bold',
+   470→                currentRSI > 70 ? 'text-red-400' : currentRSI < 30 ? 'text-emerald-400' : 'text-white'
+   471→              )}>
+   472→                {currentRSI.toFixed(1)}
+   473→              </p>
+   474→              <p className="text-xs text-slate-500 mt-1">
+   475→                {currentRSI > 70 ? 'Overbought territory' : currentRSI < 30 ? 'Oversold territory' : 'Normal range'}
+   476→              </p>
+   477→            </div>
+   478→          </div>
+   479→        </motion.div>
+   480→
+   481→        {/* MACD Card */}
+   482→        <motion.div variants={itemVariants} className="glass-card p-5">
+   483→          <div className="flex items-center justify-between mb-3">
+   484→            <h3 className="text-sm font-medium text-slate-300">MACD</h3>
+   485→            <SignalBadge signal={macdSignal.text} type={macdSignal.type} />
+   486→          </div>
+   487→          <div className="grid grid-cols-3 gap-2 mb-2">
+   488→            <div>
+   489→              <p className="text-[10px] text-slate-500 uppercase">MACD</p>
+   490→              <p className={cn('text-sm font-bold', currentMACD >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+   491→                {currentMACD >= 0 ? '+' : ''}{currentMACD.toFixed(2)}
+   492→              </p>
+   493→            </div>
+   494→            <div>
+   495→              <p className="text-[10px] text-slate-500 uppercase">Signal</p>
+   496→              <p className="text-sm font-bold text-cyan-400">{currentSignal.toFixed(2)}</p>
+   497→            </div>
+   498→            <div>
+   499→              <p className="text-[10px] text-slate-500 uppercase">Hist</p>
+   500→              <p className={cn('text-sm font-bold', currentHistogram >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+   501→                {currentHistogram >= 0 ? '+' : ''}{currentHistogram.toFixed(2)}
+   502→              </p>
+   503→            </div>
+   504→          </div>
+   505→          <MiniMACDChart data={miniMacdData} />
+   506→        </motion.div>
+   507→
+   508→        {/* SMA Card */}
+   509→        <motion.div variants={itemVariants} className="glass-card p-5">
+   510→          <div className="flex items-center justify-between mb-3">
+   511→            <h3 className="text-sm font-medium text-slate-300">SMA (20/50)</h3>
+   512→            <SignalBadge signal={smaSignal.text} type={smaSignal.type} />
+   513→          </div>
+   514→          <div className="space-y-3">
+   515→            <div className="flex items-center justify-between">
+   516→              <div className="flex items-center gap-2">
+   517→                <div className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
+   518→                <span className="text-xs text-slate-400">SMA 20</span>
+   519→              </div>
+   520→              <span className="text-sm font-bold text-white">${formatPrice(currentSMA20)}</span>
+   521→            </div>
+   522→            <div className="flex items-center justify-between">
+   523→              <div className="flex items-center gap-2">
+   524→                <div className="w-2.5 h-2.5 rounded-full bg-purple-400" />
+   525→                <span className="text-xs text-slate-400">SMA 50</span>
+   526→              </div>
+   527→              <span className="text-sm font-bold text-white">${formatPrice(currentSMA50)}</span>
+   528→            </div>
+   529→            <div className="flex items-center gap-2 text-xs">
+   530→              {smaSignal.type === 'bullish' ? (
+   531→                <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" />
+   532→              ) : smaSignal.type === 'bearish' ? (
+   533→                <ArrowDownRight className="w-3.5 h-3.5 text-red-400" />
+   534→              ) : (
+   535→                <Minus className="w-3.5 h-3.5 text-amber-400" />
+   536→              )}
+   537→              <span className={cn(
+   538→                'font-medium',
+   539→                smaSignal.type === 'bullish' && 'text-emerald-400',
+   540→                smaSignal.type === 'bearish' && 'text-red-400',
+   541→                smaSignal.type === 'neutral' && 'text-amber-400',
+   542→              )}>
+   543→                {smaSignal.type === 'bullish' ? 'SMA 20 above SMA 50' : smaSignal.type === 'bearish' ? 'SMA 20 below SMA 50' : 'Crossovers pending'}
+   544→              </span>
+   545→            </div>
+   546→          </div>
+   547→        </motion.div>
+   548→
+   549→        {/* EMA Card */}
+   550→        <motion.div variants={itemVariants} className="glass-card p-5">
+   551→          <div className="flex items-center justify-between mb-3">
+   552→            <h3 className="text-sm font-medium text-slate-300">EMA (12/26)</h3>
+   553→            <SignalBadge signal={emaTrend.text} type={emaTrend.type} />
+   554→          </div>
+   555→          <div className="space-y-3">
+   556→            <div className="flex items-center justify-between">
+   557→              <div className="flex items-center gap-2">
+   558→                <div className="w-2.5 h-2.5 rounded-full bg-indigo-400" />
+   559→                <span className="text-xs text-slate-400">EMA 12</span>
+   560→              </div>
+   561→              <span className="text-sm font-bold text-white">${formatPrice(currentEMA12)}</span>
+   562→            </div>
+   563→            <div className="flex items-center justify-between">
+   564→              <div className="flex items-center gap-2">
+   565→                <div className="w-2.5 h-2.5 rounded-full bg-rose-400" />
+   566→                <span className="text-xs text-slate-400">EMA 26</span>
+   567→              </div>
+   568→              <span className="text-sm font-bold text-white">${formatPrice(currentEMA26)}</span>
+   569→            </div>
+   570→            <div className="flex items-center gap-2 text-xs">
+   571→              {emaTrend.type === 'bullish' ? (
+   572→                <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+   573→              ) : emaTrend.type === 'bearish' ? (
+   574→                <TrendingDown className="w-3.5 h-3.5 text-red-400" />
+   575→              ) : (
+   576→                <Minus className="w-3.5 h-3.5 text-amber-400" />
+   577→              )}
+   578→              <span className={cn(
+   579→                'font-medium',
+   580→                emaTrend.type === 'bullish' && 'text-emerald-400',
+   581→                emaTrend.type === 'bearish' && 'text-red-400',
+   582→                emaTrend.type === 'neutral' && 'text-amber-400',
+   583→              )}>
+   584→                {emaTrend.text}
+   585→              </span>
+   586→            </div>
+   587→          </div>
+   588→        </motion.div>
+   589→
+   590→        {/* Bollinger Bands Card */}
+   591→        <motion.div variants={itemVariants} className="glass-card p-5">
+   592→          <div className="flex items-center justify-between mb-3">
+   593→            <h3 className="text-sm font-medium text-slate-300">Bollinger Bands</h3>
+   594→            <Badge variant="outline" className="text-[10px] border-slate-600/50 text-slate-400">
+   595→              {bbWidth.toFixed(1)}% Width
+   596→            </Badge>
+   597→          </div>
+   598→          <div className="space-y-2.5">
+   599→            <div className="flex items-center justify-between">
+   600→              <span className="text-xs text-slate-500">Upper</span>
+   601→              <span className="text-sm font-bold text-cyan-400">${formatPrice(currentBBUpper)}</span>
+   602→            </div>
+   603→            <div className="flex items-center justify-between">
+   604→              <span className="text-xs text-slate-500">Middle</span>
+   605→              <span className="text-sm font-bold text-white">${formatPrice(currentBBMiddle)}</span>
+   606→            </div>
+   607→            <div className="flex items-center justify-between">
+   608→              <span className="text-xs text-slate-500">Lower</span>
+   609→              <span className="text-sm font-bold text-cyan-400">${formatPrice(currentBBLower)}</span>
+   610→            </div>
+   611→            <div className="relative h-2 bg-slate-800/50 rounded-full overflow-hidden mt-1">
+   612→              <div
+   613→                className="absolute inset-y-0 bg-gradient-to-r from-cyan-500/20 via-indigo-500/20 to-cyan-500/20 rounded-full"
+   614→                style={{
+   615→                  left: `${Math.max(0, ((currentBBLower - currentPrice * 0.97) / (currentPrice * 0.08)) * 100)}%`,
+   616→                  right: `${Math.max(0, ((currentPrice * 1.03 - currentBBUpper) / (currentPrice * 0.08)) * 100)}%`,
+   617→                }}
+   618→              />
+   619→              <div
+   620→                className="absolute top-1/2 -translate-y-1/2 w-1.5 h-3 bg-white rounded-full shadow-lg shadow-white/30"
+   621→                style={{
+   622→                  left: `${Math.max(0, Math.min(100, ((currentPrice - currentBBLower) / (currentBBUpper - currentBBLower)) * 100))}%`,
+   623→                }}
+   624→              />
+   625→            </div>
+   626→          </div>
+   627→        </motion.div>
+   628→
+   629→        {/* ATR Card */}
+   630→        <motion.div variants={itemVariants} className="glass-card p-5">
+   631→          <div className="flex items-center justify-between mb-3">
+   632→            <h3 className="text-sm font-medium text-slate-300">ATR (14)</h3>
+   633→            <Waves className="w-4 h-4 text-amber-400" />
+   634→          </div>
+   635→          <div className="flex items-center gap-4">
+   636→            <div className="p-3 rounded-xl bg-amber-500/10">
+   637→              <Waves className="w-8 h-8 text-amber-400" />
+   638→            </div>
+   639→            <div>
+   640→              <p className="text-2xl font-bold text-white">{currentATR.toFixed(2)}</p>
+   641→              <p className="text-xs text-slate-500 mt-1">{atrInterpretation}</p>
+   642→              <p className="text-xs text-slate-600 mt-0.5">
+   643→                {((currentATR / currentPrice) * 100).toFixed(2)}% of price
+   644→              </p>
+   645→            </div>
+   646→          </div>
+   647→        </motion.div>
+   648→
+   649→        {/* Volume Analysis Card */}
+   650→        <motion.div variants={itemVariants} className="glass-card p-5">
+   651→          <div className="flex items-center justify-between mb-3">
+   652→            <h3 className="text-sm font-medium text-slate-300">Volume Analysis</h3>
+   653→            <SignalBadge signal={volumeSignal.text} type={volumeSignal.type} />
+   654→          </div>
+   655→          <div className="space-y-3">
+   656→            <div className="flex items-center justify-between">
+   657→              <span className="text-xs text-slate-500">Current Volume</span>
+   658→              <span className="text-sm font-bold text-white">{formatNumber(currentVolume)}</span>
+   659→            </div>
+   660→            <div className="flex items-center justify-between">
+   661→              <span className="text-xs text-slate-500">Avg Volume (20d)</span>
+   662→              <span className="text-sm font-bold text-slate-300">{formatNumber(avgVolume)}</span>
+   663→            </div>
+   664→            <div className="flex items-center gap-2">
+   665→              <span className="text-xs text-slate-500">Ratio:</span>
+   666→              <div className="flex-1 h-1.5 bg-slate-800/50 rounded-full overflow-hidden">
+   667→                <motion.div
+   668→                  className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 rounded-full"
+   669→                  initial={{ width: 0 }}
+   670→                  animate={{ width: `${Math.min(100, (currentVolume / avgVolume) * 50)}%` }}
+   671→                  transition={{ duration: 0.8, ease: 'easeOut' as const }}
+   672→                />
+   673→              </div>
+   674→              <span className={cn(
+   675→                'text-xs font-bold',
+   676→                currentVolume > avgVolume ? 'text-emerald-400' : 'text-red-400'
+   677→              )}>
+   678→                {(currentVolume / avgVolume).toFixed(2)}x
+   679→              </span>
+   680→            </div>
+   681→          </div>
+   682→        </motion.div>
+   683→
+   684→        {/* Stochastic Oscillator Card */}
+   685→        <motion.div variants={itemVariants} className="glass-card p-5">
+   686→          <div className="flex items-center justify-between mb-3">
+   687→            <h3 className="text-sm font-medium text-slate-300">Stochastic (14,3)</h3>
+   688→            <SignalBadge signal={stochSignal.text} type={stochSignal.type} />
+   689→          </div>
+   690→          <div className="grid grid-cols-2 gap-4">
+   691→            <div>
+   692→              <p className="text-[10px] text-slate-500 uppercase">%K</p>
+   693→              <p className={cn(
+   694→                'text-xl font-bold',
+   695→                currentStochK > 80 ? 'text-red-400' : currentStochK < 20 ? 'text-emerald-400' : 'text-white'
+   696→              )}>
+   697→                {currentStochK.toFixed(1)}
+   698→              </p>
+   699→            </div>
+   700→            <div>
+   701→              <p className="text-[10px] text-slate-500 uppercase">%D</p>
+   702→              <p className={cn(
+   703→                'text-xl font-bold',
+   704→                currentStochD > 80 ? 'text-red-400' : currentStochD < 20 ? 'text-emerald-400' : 'text-slate-300'
+   705→              )}>
+   706→                {currentStochD.toFixed(1)}
+   707→              </p>
+   708→            </div>
+   709→          </div>
+   710→          <div className="mt-3 relative h-2 bg-slate-800/50 rounded-full overflow-hidden">
+   711→            <div className="absolute left-[20%] top-0 bottom-0 w-px bg-emerald-500/30" />
+   712→            <div className="absolute left-[80%] top-0 bottom-0 w-px bg-red-500/30" />
+   713→            <motion.div
+   714→              className="absolute top-1/2 -translate-y-1/2 w-2 h-3 bg-indigo-400 rounded-full shadow-lg"
+   715→              animate={{ left: `${Math.max(0, Math.min(100, currentStochK))}%` }}
+   716→              transition={{ duration: 0.5 }}
+   717→            />
+   718→            <motion.div
+   719→              className="absolute top-1/2 -translate-y-1/2 w-2 h-3 bg-cyan-400 rounded-full shadow-lg"
+   720→              animate={{ left: `${Math.max(0, Math.min(100, currentStochD))}%` }}
+   721→              transition={{ duration: 0.5, delay: 0.1 }}
+   722→            />
+   723→          </div>
+   724→          <div className="flex justify-between text-[9px] text-slate-600 mt-1">
+   725→            <span>0</span>
+   726→            <span className="text-emerald-500/50">20</span>
+   727→            <span>50</span>
+   728→            <span className="text-red-500/50">80</span>
+   729→            <span>100</span>
+   730→          </div>
+   731→        </motion.div>
+   732→      </div>
+   733→
+   734→      {/* ── Full Technical Charts ── */}
+   735→      <motion.div variants={itemVariants} className="glass-card p-6">
+   736→        <Tabs defaultValue="rsi">
+   737→          <TabsList className="bg-white/5 mb-4">
+   738→            <TabsTrigger value="rsi" className="text-xs">
+   739→              <Activity className="w-3.5 h-3.5 mr-1.5" />
+   740→              RSI
+   741→            </TabsTrigger>
+   742→            <TabsTrigger value="macd" className="text-xs">
+   743→              <Zap className="w-3.5 h-3.5 mr-1.5" />
+   744→              MACD
+   745→            </TabsTrigger>
+   746→            <TabsTrigger value="bollinger" className="text-xs">
+   747→              <Layers className="w-3.5 h-3.5 mr-1.5" />
+   748→              Bollinger Bands
+   749→            </TabsTrigger>
+   750→            <TabsTrigger value="volume" className="text-xs">
+   751→              <Volume2 className="w-3.5 h-3.5 mr-1.5" />
+   752→              Volume & Price
+   753→            </TabsTrigger>
+   754→          </TabsList>
+   755→
+   756→          {/* RSI Chart */}
+   757→          <TabsContent value="rsi">
+   758→            <div className="h-[320px] w-full">
+   759→              <ResponsiveContainer width="100%" height="100%">
+   760→                <LineChart data={rsiChartData.filter((d) => !isNaN(d.rsi))} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+   761→                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   762→                  <XAxis
+   763→                    dataKey="date"
+   764→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   765→                    tickLine={false}
+   766→                    axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
+   767→                    interval="preserveStartEnd"
+   768→                  />
+   769→                  <YAxis
+   770→                    domain={[0, 100]}
+   771→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   772→                    tickLine={false}
+   773→                    axisLine={false}
+   774→                  />
+   775→                  <Tooltip content={<DarkTooltip />} />
+   776→                  <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="5 5" strokeOpacity={0.5} />
+   777→                  <ReferenceLine y={30} stroke="#10b981" strokeDasharray="5 5" strokeOpacity={0.5} />
+   778→                  <ReferenceLine y={50} stroke="rgba(148,163,184,0.15)" strokeDasharray="3 3" />
+   779→                  <Line
+   780→                    type="monotone"
+   781→                    dataKey="rsi"
+   782→                    stroke="#6366f1"
+   783→                    strokeWidth={2}
+   784→                    dot={false}
+   785→                    activeDot={{ r: 3, fill: '#6366f1' }}
+   786→                    name="RSI"
+   787→                  />
+   788→                </LineChart>
+   789→              </ResponsiveContainer>
+   790→            </div>
+   791→            <div className="flex items-center justify-center gap-4 mt-1">
+   792→              <span className="text-[10px] text-red-400/60">Overbought (70)</span>
+   793→              <span className="text-[10px] text-slate-500">Neutral (50)</span>
+   794→              <span className="text-[10px] text-emerald-400/60">Oversold (30)</span>
+   795→            </div>
+   796→          </TabsContent>
+   797→
+   798→          {/* MACD Chart */}
+   799→          <TabsContent value="macd">
+   800→            <div className="h-[320px] w-full">
+   801→              <ResponsiveContainer width="100%" height="100%">
+   802→                <LineChart data={macdChartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+   803→                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   804→                  <XAxis
+   805→                    dataKey="date"
+   806→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   807→                    tickLine={false}
+   808→                    axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
+   809→                    interval="preserveStartEnd"
+   810→                  />
+   811→                  <YAxis
+   812→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   813→                    tickLine={false}
+   814→                    axisLine={false}
+   815→                  />
+   816→                  <Tooltip content={<DarkTooltip />} />
+   817→                  <ReferenceLine y={0} stroke="rgba(148,163,184,0.2)" />
+   818→                  <Bar
+   819→                    dataKey="histogram"
+   820→                    fill="#6366f1"
+   821→                    opacity={0.3}
+   822→                    name="Histogram"
+   823→                    radius={[2, 2, 0, 0]}
+   824→                  />
+   825→                  <Line
+   826→                    type="monotone"
+   827→                    dataKey="macd"
+   828→                    stroke="#06b6d4"
+   829→                    strokeWidth={2}
+   830→                    dot={false}
+   831→                    activeDot={{ r: 3, fill: '#06b6d4' }}
+   832→                    name="MACD"
+   833→                  />
+   834→                  <Line
+   835→                    type="monotone"
+   836→                    dataKey="signal"
+   837→                    stroke="#f97316"
+   838→                    strokeWidth={1.5}
+   839→                    strokeDasharray="4 2"
+   840→                    dot={false}
+   841→                    activeDot={{ r: 3, fill: '#f97316' }}
+   842→                    name="Signal"
+   843→                  />
+   844→                </LineChart>
+   845→              </ResponsiveContainer>
+   846→            </div>
+   847→            <div className="flex items-center justify-center gap-6 mt-1">
+   848→              <div className="flex items-center gap-1.5 text-[10px] text-cyan-400">
+   849→                <div className="w-3 h-0.5 bg-cyan-500 rounded" /> MACD Line
+   850→              </div>
+   851→              <div className="flex items-center gap-1.5 text-[10px] text-orange-400">
+   852→                <div className="w-3 h-0.5 bg-orange-500 rounded" style={{ borderTop: '2px dashed #f97316' }} /> Signal Line
+   853→              </div>
+   854→              <div className="flex items-center gap-1.5 text-[10px] text-indigo-400">
+   855→                <div className="w-3 h-1.5 bg-indigo-500/30 rounded-sm" /> Histogram
+   856→              </div>
+   857→            </div>
+   858→          </TabsContent>
+   859→
+   860→          {/* Bollinger Bands Chart */}
+   861→          <TabsContent value="bollinger">
+   862→            <div className="h-[320px] w-full">
+   863→              <ResponsiveContainer width="100%" height="100%">
+   864→                <AreaChart data={bbChartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+   865→                  <defs>
+   866→                    <linearGradient id="bbFill" x1="0" y1="0" x2="0" y2="1">
+   867→                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.08} />
+   868→                      <stop offset="100%" stopColor="#06b6d4" stopOpacity={0.03} />
+   869→                    </linearGradient>
+   870→                  </defs>
+   871→                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   872→                  <XAxis
+   873→                    dataKey="date"
+   874→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   875→                    tickLine={false}
+   876→                    axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
+   877→                    interval="preserveStartEnd"
+   878→                  />
+   879→                  <YAxis
+   880→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   881→                    tickLine={false}
+   882→                    axisLine={false}
+   883→                    tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+   884→                    domain={['auto', 'auto']}
+   885→                  />
+   886→                  <Tooltip content={<DarkTooltip />} />
+   887→                  <Area
+   888→                    type="monotone"
+   889→                    dataKey="upper"
+   890→                    stroke="transparent"
+   891→                    fill="transparent"
+   892→                  />
+   893→                  <Area
+   894→                    type="monotone"
+   895→                    dataKey="lower"
+   896→                    stroke="transparent"
+   897→                    fill="url(#bbFill)"
+   898→                    name="Band"
+   899→                  />
+   900→                  <Line
+   901→                    type="monotone"
+   902→                    dataKey="upper"
+   903→                    stroke="#06b6d4"
+   904→                    strokeWidth={1}
+   905→                    strokeDasharray="4 2"
+   906→                    dot={false}
+   907→                    name="Upper Band"
+   908→                  />
+   909→                  <Line
+   910→                    type="monotone"
+   911→                    dataKey="middle"
+   912→                    stroke="#6366f1"
+   913→                    strokeWidth={1.5}
+   914→                    dot={false}
+   915→                    name="Middle Band"
+   916→                  />
+   917→                  <Line
+   918→                    type="monotone"
+   919→                    dataKey="lower"
+   920→                    stroke="#06b6d4"
+   921→                    strokeWidth={1}
+   922→                    strokeDasharray="4 2"
+   923→                    dot={false}
+   924→                    name="Lower Band"
+   925→                  />
+   926→                  <Line
+   927→                    type="monotone"
+   928→                    dataKey="price"
+   929→                    stroke="#10b981"
+   930→                    strokeWidth={2}
+   931→                    dot={false}
+   932→                    activeDot={{ r: 3, fill: '#10b981' }}
+   933→                    name="Price"
+   934→                  />
+   935→                </AreaChart>
+   936→              </ResponsiveContainer>
+   937→            </div>
+   938→            <div className="flex items-center justify-center gap-6 mt-1">
+   939→              <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+   940→                <div className="w-3 h-0.5 bg-emerald-500 rounded" /> Price
+   941→              </div>
+   942→              <div className="flex items-center gap-1.5 text-[10px] text-indigo-400">
+   943→                <div className="w-3 h-0.5 bg-indigo-500 rounded" /> Middle Band (SMA 20)
+   944→              </div>
+   945→              <div className="flex items-center gap-1.5 text-[10px] text-cyan-400">
+   946→                <div className="w-3 h-0.5 bg-cyan-500 rounded" style={{ borderTop: '2px dashed #06b6d4' }} /> Upper/Lower Band
+   947→              </div>
+   948→            </div>
+   949→          </TabsContent>
+   950→
+   951→          {/* Volume & Price Chart */}
+   952→          <TabsContent value="volume">
+   953→            <div className="h-[320px] w-full">
+   954→              <ResponsiveContainer width="100%" height="100%">
+   955→                <LineChart data={volumeChartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+   956→                  <defs>
+   957→                    <linearGradient id="volFill" x1="0" y1="0" x2="0" y2="1">
+   958→                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.5} />
+   959→                      <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
+   960→                    </linearGradient>
+   961→                  </defs>
+   962→                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   963→                  <XAxis
+   964→                    dataKey="date"
+   965→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   966→                    tickLine={false}
+   967→                    axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
+   968→                    interval="preserveStartEnd"
+   969→                  />
+   970→                  <YAxis
+   971→                    yAxisId="price"
+   972→                    orientation="right"
+   973→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   974→                    tickLine={false}
+   975→                    axisLine={false}
+   976→                    tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+   977→                    domain={['auto', 'auto']}
+   978→                  />
+   979→                  <YAxis
+   980→                    yAxisId="volume"
+   981→                    orientation="left"
+   982→                    tick={{ fill: '#64748b', fontSize: 10 }}
+   983→                    tickLine={false}
+   984→                    axisLine={false}
+   985→                    tickFormatter={(v: number) => formatNumber(v)}
+   986→                  />
+   987→                  <Tooltip content={<DarkTooltip />} />
+   988→                  <Bar
+   989→                    yAxisId="volume"
+   990→                    dataKey="volume"
+   991→                    fill="#6366f1"
+   992→                    opacity={0.25}
+   993→                    name="Volume"
+   994→                    radius={[2, 2, 0, 0]}
+   995→                  />
+   996→                  <Line
+   997→                    yAxisId="price"
+   998→                    type="monotone"
+   999→                    dataKey="price"
+  1000→                    stroke="#10b981"
+  1001→                    strokeWidth={2}
+  1002→                    dot={false}
+  1003→                    activeDot={{ r: 3, fill: '#10b981' }}
+  1004→                    name="Price"
+  1005→                  />
+  1006→                </LineChart>
+  1007→              </ResponsiveContainer>
+  1008→            </div>
+  1009→            <div className="flex items-center justify-center gap-6 mt-1">
+  1010→              <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+  1011→                <div className="w-3 h-0.5 bg-emerald-500 rounded" /> Price (Right Axis)
+  1012→              </div>
+  1013→              <div className="flex items-center gap-1.5 text-[10px] text-indigo-400">
+  1014→                <div className="w-3 h-1.5 bg-indigo-500/30 rounded-sm" /> Volume (Left Axis)
+  1015→              </div>
+  1016→            </div>
+  1017→          </TabsContent>
+  1018→        </Tabs>
+  1019→      </motion.div>
+  1020→    </motion.div>
+  1021→  );
+  1022→}
