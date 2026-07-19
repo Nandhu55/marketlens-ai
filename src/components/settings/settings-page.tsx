@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Palette,
   PanelLeftClose,
   PanelLeft,
   Bell,
-  BellOff,
   Database,
   BarChart3,
   Monitor,
@@ -20,7 +19,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
-import { STOCKS } from '@/lib/stock-utils';
+import { KNOWN_SYMBOLS } from '@/lib/stock-utils';
 import { SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -107,7 +106,7 @@ export function SettingsPage() {
 
   // Apply default stock
   const handleApplyDefaultStock = useCallback(() => {
-    if (STOCKS[defaultStock]) {
+    if (KNOWN_SYMBOLS.find((s) => s.symbol === defaultStock)) {
       toast.success(`Default stock set to ${defaultStock}`);
     } else {
       toast.error('Invalid stock symbol');
@@ -336,7 +335,7 @@ export function SettingsPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-white">About MarketLens AI</p>
-                  <p className="text-xs text-slate-500">Version 2.0.0 • Learn about the architecture & team</p>
+                  <p className="text-xs text-slate-500">Version 3.0.0 • Learn about the architecture & team</p>
                 </div>
               </div>
               <Button

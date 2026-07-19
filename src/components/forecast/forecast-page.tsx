@@ -1,16 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
-  LineChart,
+  ComposedChart,
   Line,
+  Area,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Area,
-  ComposedChart,
 } from 'recharts';
 import {
   TrendingUp,
@@ -18,24 +17,24 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Activity,
-  BarChart3,
   Zap,
   Shield,
   Clock,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
 import {
-  STOCKS,
-  generateStockData,
+  KNOWN_SYMBOLS,
   formatPrice,
   formatPercent,
   getChangeColor,
 } from '@/lib/stock-utils';
-import { SectionHeader } from '@/components/shared/animated-counter';
+import { SectionHeader, LoadingSpinner, EmptyState } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -52,8 +51,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────────────────
 type Timeframe = 'tomorrow' | '3days' | '7days' | '30days';
 
 interface ForecastPoint {
@@ -64,99 +64,28 @@ interface ForecastPoint {
   confidence: number;
 }
 
-// ─── Deterministic forecast generator ─────────────────────────────────────────
-function seededRandom(seed: number) {
-  let x = Math.sin(seed) * 10000;
-  return x - Math.floor(x);
+interface ForecastSummary {
+  predictedPrice: number;
+  expectedChange: number;
+  volatility: number;
+  confidence: number;
+  analysis?: string;
 }
 
-function generateForecast(symbol: string, timeframe: Timeframe): {
+interface ForecastResponse {
+  symbol: string;
+  stockName: string;
+  currentPrice: number;
+  timeframe: string;
+  dataSource: string;
   historical: { date: string; price: number }[];
   forecast: ForecastPoint[];
-  summary: {
-    predictedPrice: number;
-    expectedChange: number;
-    upperBound: number;
-    lowerBound: number;
-    volatility: number;
-    confidence: number;
-  };
-} {
-  const stock = STOCKS[symbol] || STOCKS.AAPL;
-  const hash = symbol.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-
-  // Historical data (last 30 trading days)
-  const rawData = generateStockData(symbol, 45);
-  const historical = rawData.slice(-30).map((d) => ({
-    date: d.date,
-    price: d.close,
-  }));
-
-  const lastPrice = historical[historical.length - 1].price;
-  const lastDate = new Date(historical[historical.length - 1].date);
-
-  // Determine number of forecast days
-  const daysMap: Record<Timeframe, number> = {
-    tomorrow: 1,
-    '3days': 3,
-    '7days': 7,
-    '30days': 30,
-  };
-  const numDays = daysMap[timeframe];
-
-  // Generate forecast with widening confidence interval
-  const volatility = stock.pe > 50 ? 0.025 : 0.015;
-  const trend = seededRandom(hash + 42) > 0.4 ? 1 : -1;
-  const trendStrength = (seededRandom(hash + 77) * 0.01 + 0.002) * trend;
-
-  const forecast: ForecastPoint[] = [];
-  let prevPrice = lastPrice;
-
-  for (let i = 1; i <= numDays; i++) {
-    const fDate = new Date(lastDate);
-    fDate.setDate(fDate.getDate() + i);
-    // Skip weekends
-    if (fDate.getDay() === 0) fDate.setDate(fDate.getDate() + 1);
-    if (fDate.getDay() === 6) fDate.setDate(fDate.getDate() + 2);
-
-    const dayVol = volatility * (0.5 + seededRandom(hash + i * 31) * 0.5);
-    const predicted = prevPrice * (1 + trendStrength + dayVol * (seededRandom(hash + i * 47) * 2 - 1));
-
-    // Confidence interval widens over time
-    const dayMultiplier = 1 + (i * 0.15);
-    const lower = predicted * (1 - dayVol * dayMultiplier);
-    const upper = predicted * (1 + dayVol * dayMultiplier);
-    const confidence = Math.max(55, 95 - (i * (timeframe === '30days' ? 1.2 : 4)));
-
-    forecast.push({
-      date: fDate.toISOString().split('T')[0],
-      predicted: parseFloat(predicted.toFixed(2)),
-      lower: parseFloat(lower.toFixed(2)),
-      upper: parseFloat(upper.toFixed(2)),
-      confidence: parseFloat(confidence.toFixed(1)),
-    });
-
-    prevPrice = predicted;
-  }
-
-  const finalForecast = forecast[forecast.length - 1];
-  const expectedChange = ((finalForecast.predicted - lastPrice) / lastPrice) * 100;
-
-  return {
-    historical,
-    forecast,
-    summary: {
-      predictedPrice: finalForecast.predicted,
-      expectedChange: parseFloat(expectedChange.toFixed(2)),
-      upperBound: finalForecast.upper,
-      lowerBound: finalForecast.lower,
-      volatility: parseFloat((volatility * 100).toFixed(2)),
-      confidence: finalForecast.confidence,
-    },
-  };
+  summary: ForecastSummary;
+  error?: string;
+  message?: string;
 }
 
-// ─── Animation variants ───────────────────────────────────────────────────────
+// ─── Animation variants ─────────────────────────────────────────────────────
 const containerVariants = {
   hidden: { opacity: 0 },
   show: {
@@ -170,7 +99,7 @@ const itemVariants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
-// ─── Custom Tooltip ───────────────────────────────────────────────────────────
+// ─── Custom Tooltip ─────────────────────────────────────────────────────────
 function ForecastTooltip({
   active,
   payload,
@@ -201,91 +130,178 @@ function ForecastTooltip({
   );
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Component ──────────────────────────────────────────────────────────────
 export function ForecastPage() {
   const { selectedStock } = useAppStore();
   const [stockSymbol, setStockSymbol] = useState(selectedStock.symbol);
   const [timeframe, setTimeframe] = useState<Timeframe>('7days');
+  const [data, setData] = useState<ForecastResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const { historical, forecast, summary } = useMemo(
-    () => generateForecast(stockSymbol, timeframe),
-    [stockSymbol, timeframe]
-  );
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/forecast?symbol=${stockSymbol}&timeframe=${timeframe}`);
+      const json: ForecastResponse = await res.json();
+      setData(json);
+      if (json.dataSource === 'none' || json.error) {
+        setError(json.error || 'No Live Data Available');
+      }
+    } catch {
+      setError('No Live Data Available');
+    } finally {
+      setLoading(false);
+    }
+  }, [stockSymbol, timeframe]);
 
-  const stock = STOCKS[stockSymbol] || STOCKS.AAPL;
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
-  // Merge for chart
+  const stock = KNOWN_SYMBOLS.find((s) => s.symbol === stockSymbol) || KNOWN_SYMBOLS[0];
+  const historical = data?.historical || [];
+  const forecast = data?.forecast || [];
+  const summary = data?.summary;
+  const isReal = data?.dataSource === 'real';
+
+  // Merge chart data
   const chartData = useMemo(() => {
+    if (historical.length === 0 && forecast.length === 0) return [];
     const hist = historical.map((h) => ({ date: h.date, price: h.price }));
-    const lastHist = historical[historical.length - 1];
+    const lastHist = historical.length > 0 ? historical[historical.length - 1] : null;
+    const bridgePoint = lastHist
+      ? { date: lastHist.date, price: lastHist.price, predicted: lastHist.price, lower: lastHist.price, upper: lastHist.price }
+      : null;
     const fc = forecast.map((f) => ({
       date: f.date,
       predicted: f.predicted,
       lower: f.lower,
       upper: f.upper,
     }));
-    // Bridge point
-    return [
-      ...hist,
-      { date: lastHist.date, price: lastHist.price, predicted: lastHist.price, lower: lastHist.price, upper: lastHist.price },
-      ...fc,
-    ];
+    if (bridgePoint) return [...hist, bridgePoint, ...fc];
+    return [...hist, ...fc];
   }, [historical, forecast]);
 
-  const summaryCards = useMemo(
-    () => [
-      {
-        title: 'Predicted Price',
-        value: `$${formatPrice(summary.predictedPrice)}`,
-        icon: Target,
-        color: 'text-cyan-400',
-        bg: 'bg-cyan-500/10',
-        glow: 'glow-cyan',
-      },
-      {
-        title: 'Expected Change',
-        value: formatPercent(summary.expectedChange),
-        icon: summary.expectedChange >= 0 ? ArrowUpRight : ArrowDownRight,
-        color: getChangeColor(summary.expectedChange),
-        bg: summary.expectedChange >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10',
-        glow: summary.expectedChange >= 0 ? 'glow-green' : 'glow-red',
-      },
-      {
-        title: 'Upper Bound',
-        value: `$${formatPrice(summary.upperBound)}`,
-        icon: ArrowUpRight,
-        color: 'text-emerald-400',
-        bg: 'bg-emerald-500/10',
-        glow: 'glow-green',
-      },
-      {
-        title: 'Lower Bound',
-        value: `$${formatPrice(summary.lowerBound)}`,
-        icon: ArrowDownRight,
-        color: 'text-red-400',
-        bg: 'bg-red-500/10',
-        glow: 'glow-red',
-      },
-      {
-        title: 'Volatility Forecast',
-        value: `${summary.volatility}%`,
-        icon: Activity,
-        color: 'text-purple-400',
-        bg: 'bg-purple-500/10',
-        glow: 'glow-purple',
-      },
-      {
-        title: 'Confidence',
-        value: `${summary.confidence}%`,
-        icon: Shield,
-        color: 'text-indigo-400',
-        bg: 'bg-indigo-500/10',
-        glow: 'glow-blue',
-      },
-    ],
-    [summary]
-  );
+  const summaryCards = summary
+    ? [
+        {
+          title: 'Predicted Price',
+          value: `$${formatPrice(summary.predictedPrice)}`,
+          icon: Target,
+          color: 'text-cyan-400',
+          bg: 'bg-cyan-500/10',
+          glow: 'glow-cyan',
+        },
+        {
+          title: 'Expected Change',
+          value: formatPercent(summary.expectedChange),
+          icon: summary.expectedChange >= 0 ? ArrowUpRight : ArrowDownRight,
+          color: getChangeColor(summary.expectedChange),
+          bg: summary.expectedChange >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10',
+          glow: summary.expectedChange >= 0 ? 'glow-green' : 'glow-red',
+        },
+        {
+          title: 'Upper Bound',
+          value: `$${formatPrice(forecast.length > 0 ? forecast[forecast.length - 1].upper : 0)}`,
+          icon: ArrowUpRight,
+          color: 'text-emerald-400',
+          bg: 'bg-emerald-500/10',
+          glow: 'glow-green',
+        },
+        {
+          title: 'Lower Bound',
+          value: `$${formatPrice(forecast.length > 0 ? forecast[forecast.length - 1].lower : 0)}`,
+          icon: ArrowDownRight,
+          color: 'text-red-400',
+          bg: 'bg-red-500/10',
+          glow: 'glow-red',
+        },
+        {
+          title: 'Volatility Forecast',
+          value: `${summary.volatility.toFixed(2)}%`,
+          icon: Activity,
+          color: 'text-purple-400',
+          bg: 'bg-purple-500/10',
+          glow: 'glow-purple',
+        },
+        {
+          title: 'Confidence',
+          value: `${summary.confidence.toFixed(1)}%`,
+          icon: Shield,
+          color: 'text-cyan-400',
+          bg: 'bg-cyan-500/10',
+          glow: 'glow-cyan',
+        },
+      ]
+    : [];
 
+  // ─── Loading State ─────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <SectionHeader
+          title="Price Forecast"
+          subtitle={`Loading forecast for ${stock.name}...`}
+          action={<Skeleton className="h-9 w-[160px] bg-white/5" />}
+        />
+        <Card className="glass-card">
+          <CardContent className="p-6">
+            <Skeleton className="h-5 w-48 bg-white/5 mb-4" />
+            <Skeleton className="h-[350px] w-full bg-white/5" />
+          </CardContent>
+        </Card>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="glass-card p-4">
+              <Skeleton className="h-4 w-20 bg-white/5 mb-2" />
+              <Skeleton className="h-6 w-28 bg-white/5" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Error / No Data State ─────────────────────────────────────────────
+  if (error || !data || data.dataSource === 'none' || !summary) {
+    return (
+      <div className="space-y-6">
+        <SectionHeader
+          title="Price Forecast"
+          subtitle={`AI-powered price prediction for ${stock.name} (${stockSymbol})`}
+          action={
+            <Select value={stockSymbol} onValueChange={setStockSymbol}>
+              <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KNOWN_SYMBOLS.map((s) => (
+                  <SelectItem key={s.symbol} value={s.symbol}>
+                    {s.symbol}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        />
+        <EmptyState
+          icon={<TrendingUp className="w-12 h-12" />}
+          title="No Live Data Available"
+          description={error || `Could not generate a forecast for ${stockSymbol}. The service may be temporarily unavailable.`}
+          action={
+            <Button onClick={fetchData} variant="outline" className="gap-2 border-white/10 hover:bg-white/5 text-slate-300">
+              <RefreshCw className="w-4 h-4" />
+              Retry
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  // ─── Loaded State ──────────────────────────────────────────────────────
   return (
     <motion.div
       className="space-y-6"
@@ -295,14 +311,19 @@ export function ForecastPage() {
     >
       <SectionHeader
         title="Price Forecast"
-        subtitle={`AI-powered price prediction for ${stock.name} (${stockSymbol})`}
+        subtitle={
+          isReal
+            ? `${data.stockName || stock.name} (${stockSymbol}) — Current: $${formatPrice(data.currentPrice)}`
+            : `AI-powered price prediction for ${stock.name} (${stockSymbol})`
+        }
+        badge={isReal ? { label: 'AI POWERED', color: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30' } : undefined}
         action={
           <Select value={stockSymbol} onValueChange={setStockSymbol}>
             <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Object.values(STOCKS).map((s) => (
+              {KNOWN_SYMBOLS.map((s) => (
                 <SelectItem key={s.symbol} value={s.symbol}>
                   {s.symbol}
                 </SelectItem>
@@ -312,7 +333,7 @@ export function ForecastPage() {
         }
       />
 
-      {/* ── Forecast Chart ────────────────────────────────────────────────── */}
+      {/* ── Forecast Chart ──────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <Card className="glass-card">
           <CardHeader className="pb-3">
@@ -320,19 +341,25 @@ export function ForecastPage() {
               <CardTitle className="flex items-center gap-2 text-white text-base">
                 <TrendingUp className="w-5 h-5 text-cyan-400" />
                 Price Forecast
+                {isReal && (
+                  <Badge className="bg-cyan-500/15 text-cyan-400 border-cyan-500/30 ml-2" variant="outline">
+                    <Sparkles className="w-3 h-3 mr-1" />
+                    LIVE
+                  </Badge>
+                )}
               </CardTitle>
               <Tabs value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
                 <TabsList className="bg-white/5 h-9">
-                  <TabsTrigger value="tomorrow" className="text-xs px-3 h-7 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-300">
+                  <TabsTrigger value="tomorrow" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
                     Tomorrow
                   </TabsTrigger>
-                  <TabsTrigger value="3days" className="text-xs px-3 h-7 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-300">
+                  <TabsTrigger value="3days" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
                     3 Days
                   </TabsTrigger>
-                  <TabsTrigger value="7days" className="text-xs px-3 h-7 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-300">
+                  <TabsTrigger value="7days" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
                     7 Days
                   </TabsTrigger>
-                  <TabsTrigger value="30days" className="text-xs px-3 h-7 data-[state=active]:bg-indigo-500/20 data-[state=active]:text-indigo-300">
+                  <TabsTrigger value="30days" className="text-xs px-3 h-7 data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">
                     30 Days
                   </TabsTrigger>
                 </TabsList>
@@ -344,7 +371,7 @@ export function ForecastPage() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <defs>
-                    <linearGradient id="confidenceGradient" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="forecastConfidenceGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.25} />
                       <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.02} />
                     </linearGradient>
@@ -374,7 +401,7 @@ export function ForecastPage() {
                     type="monotone"
                     dataKey="upper"
                     stroke="none"
-                    fill="url(#confidenceGradient)"
+                    fill="url(#forecastConfidenceGrad)"
                     fillOpacity={1}
                     name="upper"
                     isAnimationActive={false}
@@ -388,7 +415,7 @@ export function ForecastPage() {
                     name="lower"
                     isAnimationActive={false}
                   />
-                  {/* Historical line */}
+                  {/* Historical line (solid) */}
                   <Line
                     type="monotone"
                     dataKey="price"
@@ -431,7 +458,7 @@ export function ForecastPage() {
         </Card>
       </motion.div>
 
-      {/* ── Summary Cards ─────────────────────────────────────────────────── */}
+      {/* ── Summary Cards ───────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {summaryCards.map((card, i) => (
           <motion.div
@@ -452,7 +479,24 @@ export function ForecastPage() {
         ))}
       </motion.div>
 
-      {/* ── Detailed Forecast Table ────────────────────────────────────────── */}
+      {/* ── Analysis (if available) ─────────────────────────────────────── */}
+      {summary.analysis && (
+        <motion.div variants={itemVariants}>
+          <Card className="glass-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white text-base">
+                <Zap className="w-5 h-5 text-purple-400" />
+                Forecast Analysis
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{summary.analysis}</p>
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
+      {/* ── Detailed Forecast Table ─────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <Card className="glass-card">
           <CardHeader>
@@ -462,58 +506,65 @@ export function ForecastPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ScrollArea className="max-h-[400px]">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-white/5 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-medium text-xs">Date</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs text-right">Predicted</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs text-right">Lower Bound</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs text-right">Upper Bound</TableHead>
-                    <TableHead className="text-slate-400 font-medium text-xs text-right">Confidence</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {forecast.map((row, i) => {
-                    const prev = i === 0 ? historical[historical.length - 1].price : forecast[i - 1].predicted;
-                    const change = ((row.predicted - prev) / prev) * 100;
-                    return (
-                      <TableRow key={row.date} className="border-white/5 hover:bg-white/[0.03]">
-                        <TableCell className="text-sm text-slate-300 font-mono">
-                          {row.date}
-                        </TableCell>
-                        <TableCell className="text-sm text-white font-semibold text-right">
-                          ${formatPrice(row.predicted)}
-                          <span className={`ml-2 text-xs ${getChangeColor(change)}`}>
-                            {formatPercent(change)}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-sm text-red-400 text-right">
-                          ${formatPrice(row.lower)}
-                        </TableCell>
-                        <TableCell className="text-sm text-emerald-400 text-right">
-                          ${formatPrice(row.upper)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] ${
-                              row.confidence >= 80
-                                ? 'border-emerald-500/30 text-emerald-400'
-                                : row.confidence >= 65
-                                ? 'border-yellow-500/30 text-yellow-400'
-                                : 'border-red-500/30 text-red-400'
-                            }`}
-                          >
-                            {row.confidence}%
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </ScrollArea>
+            {forecast.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No forecast data available for this timeframe.</p>
+            ) : (
+              <ScrollArea className="max-h-[400px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-white/5 hover:bg-transparent">
+                      <TableHead className="text-slate-400 font-medium text-xs">Date</TableHead>
+                      <TableHead className="text-slate-400 font-medium text-xs text-right">Predicted</TableHead>
+                      <TableHead className="text-slate-400 font-medium text-xs text-right">Change %</TableHead>
+                      <TableHead className="text-slate-400 font-medium text-xs text-right">Lower Bound</TableHead>
+                      <TableHead className="text-slate-400 font-medium text-xs text-right">Upper Bound</TableHead>
+                      <TableHead className="text-slate-400 font-medium text-xs text-right">Confidence</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {forecast.map((row, i) => {
+                      const prev = i === 0 ? data.currentPrice : forecast[i - 1].predicted;
+                      const change = prev > 0 ? ((row.predicted - prev) / prev) * 100 : 0;
+                      return (
+                        <TableRow key={row.date} className="border-white/5 hover:bg-white/[0.03]">
+                          <TableCell className="text-sm text-slate-300 font-mono">
+                            {row.date}
+                          </TableCell>
+                          <TableCell className="text-sm text-white font-semibold text-right">
+                            ${formatPrice(row.predicted)}
+                          </TableCell>
+                          <TableCell className="text-sm text-right">
+                            <span className={getChangeColor(change)}>
+                              {formatPercent(change)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-sm text-red-400 text-right">
+                            ${formatPrice(row.lower)}
+                          </TableCell>
+                          <TableCell className="text-sm text-emerald-400 text-right">
+                            ${formatPrice(row.upper)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] ${
+                                row.confidence >= 80
+                                  ? 'border-emerald-500/30 text-emerald-400'
+                                  : row.confidence >= 65
+                                  ? 'border-yellow-500/30 text-yellow-400'
+                                  : 'border-red-500/30 text-red-400'
+                              }`}
+                            >
+                              {row.confidence.toFixed(1)}%
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            )}
           </CardContent>
         </Card>
       </motion.div>

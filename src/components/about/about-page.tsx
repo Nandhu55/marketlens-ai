@@ -20,7 +20,6 @@ import { SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
 
 // ─── Animation variants ───────────────────────────────────────────────────────
 const containerVariants = {
@@ -77,30 +76,30 @@ function ArchBox({
 const TECH_STACK = [
   { name: 'Next.js 16', color: 'bg-slate-500/20 text-slate-300 border-slate-500/20' },
   { name: 'TypeScript', color: 'bg-blue-500/20 text-blue-300 border-blue-500/20' },
-  { name: 'Tailwind CSS', color: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/20' },
+  { name: 'Tailwind CSS 4', color: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/20' },
   { name: 'shadcn/ui', color: 'bg-purple-500/20 text-purple-300 border-purple-500/20' },
   { name: 'Framer Motion', color: 'bg-pink-500/20 text-pink-300 border-pink-500/20' },
   { name: 'Recharts', color: 'bg-orange-500/20 text-orange-300 border-orange-500/20' },
   { name: 'Prisma ORM', color: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/20' },
   { name: 'Zustand', color: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/20' },
-  { name: 'TanStack Query', color: 'bg-red-500/20 text-red-300 border-red-500/20' },
-  { name: 'Lucide Icons', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/20' },
+  { name: 'z-ai-web-dev-sdk', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/20' },
+  { name: 'Lucide Icons', color: 'bg-rose-500/20 text-rose-300 border-rose-500/20' },
 ];
 
 // ─── Features list ────────────────────────────────────────────────────────────
 const FEATURES = [
-  'Real-time stock monitoring with live candlestick charts',
-  'AI-powered price predictions using LSTM neural networks',
-  'Comprehensive technical analysis with 6+ indicators',
-  'News sentiment analysis powered by FinBERT',
+  'Real-time stock quotes via Web Search + LLM Analysis',
+  'AI-powered price predictions using GPT-class LLM',
+  'Comprehensive technical analysis with 15+ indicators',
+  'News sentiment analysis powered by LLM',
+  'Stock screener with real-time data filtering',
+  'Conversational AI assistant for market Q&A',
+  'Custom price alerts and notification management',
   'Portfolio tracking with P/L analytics and allocation charts',
   'Multi-timeframe forecasting with confidence intervals',
-  'Customizable report generation (CSV & text export)',
+  'Customizable report generation with text export',
   'Dark theme with glassmorphism design',
   'Responsive design for desktop and mobile',
-  'Interactive watchlist with mini sparkline charts',
-  'Fear & Greed Index gauge visualization',
-  'Market-wide heatmap with sector analysis',
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -125,10 +124,10 @@ export function AboutPage() {
           <Sparkles className="w-10 h-10 text-indigo-400" />
         </motion.div>
         <h1 className="text-4xl font-bold gradient-text mb-2">MarketLens AI</h1>
-        <p className="text-slate-400 text-sm mb-1">v2.0.0</p>
+        <p className="text-slate-400 text-sm mb-1">v3.0.0</p>
         <p className="text-slate-300 text-base max-w-lg mx-auto leading-relaxed">
-          A premium financial analytics SaaS platform that combines AI-powered predictions,
-          real-time market data, and advanced technical analysis into one elegant interface.
+          A premium financial analytics platform that combines real-time market data from web search,
+          GPT-class LLM analysis, and advanced technical indicators into one elegant interface.
         </p>
       </motion.div>
 
@@ -152,7 +151,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Box}
                 title="Frontend Layer"
-                items={['Next.js 16 App Router', 'React 19 Server Components', 'Tailwind CSS 4 + Glassmorphism', 'shadcn/ui Component Library', 'Framer Motion Animations']}
+                items={['Next.js 16 App Router', 'React 19 with Client Components', 'Tailwind CSS 4 + Glassmorphism', 'shadcn/ui Component Library', 'Framer Motion Animations']}
                 color="border-l-indigo-500"
                 delay={0}
               />
@@ -166,7 +165,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Server}
                 title="Backend Services"
-                items={['Next.js API Routes', 'Prisma ORM (SQLite)', 'Zustand State Management', 'TanStack Query Server State', 'Real-time WebSocket Support']}
+                items={['Next.js API Routes', 'Prisma ORM (SQLite)', 'Zustand State Management', 'z-ai-web-dev-sdk Integration', 'Real-time WebSocket Support']}
                 color="border-l-purple-500"
                 delay={0.1}
               />
@@ -180,7 +179,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Brain}
                 title="AI Engine"
-                items={['LSTM Neural Network (Price Prediction)', 'FinBERT (Sentiment Analysis)', '15 Technical Indicator Features', 'Ensemble Model Architecture', 'Real-time Inference Pipeline']}
+                items={['GPT-class LLM for Predictions', 'GPT-class LLM for Sentiment Analysis', '15+ Technical Indicator Features', 'Real-time Web Search Data', 'Conversational AI Assistant']}
                 color="border-l-cyan-500"
                 delay={0.2}
               />
@@ -194,7 +193,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Database}
                 title="Data Sources"
-                items={['Yahoo Finance API', 'NewsAPI Integration', 'Historical OHLCV Data', 'Real-time Market Feeds', 'Economic Indicators']}
+                items={['Real-time via Web Search + LLM Analysis', 'Historical OHLCV Data via AI SDK', 'Real-time Market Feeds', 'News Aggregation via Web Search', 'Economic Indicators']}
                 color="border-l-emerald-500"
                 delay={0.3}
               />
@@ -214,84 +213,62 @@ export function AboutPage() {
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* LSTM Architecture */}
+              {/* LLM Analysis */}
               <div className="p-5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
                 <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
                   <Brain className="w-4 h-4 text-indigo-400" />
-                  LSTM Architecture
+                  GPT-class LLM
                 </h4>
-                <div className="flex items-center gap-1.5 flex-wrap mb-3">
-                  {['Input(15)', '→', 'LSTM(128)', '→', 'Dropout', '→', 'LSTM(64)', '→', 'Dense(32)', '→', 'Output'].map(
-                    (node, i) => (
-                      <span
-                        key={i}
-                        className={`px-2 py-1 rounded-md text-[11px] font-mono ${
-                          node === '→'
-                            ? 'text-slate-600'
-                            : 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20'
-                        }`}
-                      >
-                        {node}
-                      </span>
-                    )
-                  )}
-                </div>
+                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                  Powered by GPT-class large language model for predictions, sentiment analysis, and conversational assistance.
+                  All analysis is generated in real-time using current market data.
+                </p>
                 <div className="space-y-2 text-xs text-slate-400">
                   <div className="flex justify-between">
-                    <span>Training Data</span>
-                    <span className="text-white font-medium">5 years historical</span>
+                    <span>Use Cases</span>
+                    <span className="text-white font-medium">Predictions, Sentiment, Chat</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Data Input</span>
+                    <span className="text-white font-medium">Real-time + Technical Indicators</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Features</span>
-                    <span className="text-white font-medium">15 technical indicators + sentiment</span>
+                    <span className="text-white font-medium">15 technical indicators + news</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Accuracy</span>
-                    <span className="text-emerald-400 font-semibold">87.3%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Loss Function</span>
-                    <span className="text-white font-medium">Huber Loss</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Optimizer</span>
-                    <span className="text-white font-medium">Adam (lr=0.001)</span>
+                    <span>Latency</span>
+                    <span className="text-emerald-400 font-semibold">Real-time inference</span>
                   </div>
                 </div>
               </div>
 
-              {/* FinBERT Sentiment */}
+              {/* Sentiment Analysis */}
               <div className="p-5 rounded-xl bg-white/[0.02] border border-white/[0.04]">
                 <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
                   <Cloud className="w-4 h-4 text-emerald-400" />
-                  FinBERT Sentiment
+                  News Sentiment via LLM
                 </h4>
-                <div className="space-y-3">
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Pre-trained on 10,000+ financial news articles and earnings call transcripts.
-                    Fine-tuned for financial domain-specific language understanding.
-                  </p>
-                  <div className="space-y-2 text-xs text-slate-400">
-                    <div className="flex justify-between">
-                      <span>Model</span>
-                      <span className="text-white font-medium">FinBERT-base</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Sentiment Classes</span>
-                      <span className="text-white font-medium">Positive / Neutral / Negative</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>F1 Score</span>
-                      <span className="text-emerald-400 font-semibold">0.924</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Sources Analyzed</span>
-                      <span className="text-white font-medium">Bloomberg, Reuters, CNBC, WSJ, FT</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Update Frequency</span>
-                      <span className="text-white font-medium">Real-time</span>
-                    </div>
+                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                  Financial news articles are fetched via web search and analyzed by LLM for sentiment scoring.
+                  Provides real-time market sentiment for informed decision-making.
+                </p>
+                <div className="space-y-2 text-xs text-slate-400">
+                  <div className="flex justify-between">
+                    <span>Model</span>
+                    <span className="text-white font-medium">GPT-class LLM</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Sentiment Classes</span>
+                    <span className="text-white font-medium">Positive / Neutral / Negative</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>News Sources</span>
+                    <span className="text-white font-medium">Web Search (real-time)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Update Frequency</span>
+                    <span className="text-white font-medium">Real-time</span>
                   </div>
                 </div>
               </div>

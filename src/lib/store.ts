@@ -8,6 +8,9 @@ export type PageId =
   | 'news-sentiment'
   | 'forecast'
   | 'portfolio'
+  | 'screener'
+  | 'ai-assistant'
+  | 'alerts'
   | 'reports'
   | 'settings'
   | 'about';
@@ -38,6 +41,20 @@ export interface MarketOverviewData {
   topLosers: Array<{ symbol: string; change: number }>;
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface AlertItem {
+  id: string;
+  symbol: string;
+  type: string;
+  value: number;
+  triggered: boolean;
+  createdAt: string;
+}
+
 interface AppState {
   activePage: PageId;
   setActivePage: (page: PageId) => void;
@@ -59,16 +76,25 @@ interface AppState {
   setMarketOverview: (overview: MarketOverviewData | null) => void;
   isLive: boolean;
   setIsLive: (live: boolean) => void;
+  // Chat messages
+  chatMessages: ChatMessage[];
+  addChatMessage: (message: ChatMessage) => void;
+  clearChatMessages: () => void;
+  removeChatMessage: (index: number) => void;
+  // Alerts
+  alerts: AlertItem[];
+  addAlert: (alert: AlertItem) => void;
+  removeAlert: (id: string) => void;
 }
 
 const defaultStock: StockState = {
   symbol: 'AAPL',
   name: 'Apple Inc.',
-  price: 198.45,
-  change: 2.34,
-  changePercent: 1.19,
-  volume: 54234567,
-  marketCap: 3050000000000,
+  price: 0,
+  change: 0,
+  changePercent: 0,
+  volume: 0,
+  marketCap: 0,
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -103,4 +129,21 @@ export const useAppStore = create<AppState>((set) => ({
   setMarketOverview: (overview) => set({ marketOverview: overview }),
   isLive: false,
   setIsLive: (live) => set({ isLive: live }),
+  // Chat messages
+  chatMessages: [],
+  addChatMessage: (message) =>
+    set((state) => ({ chatMessages: [...state.chatMessages, message] })),
+  clearChatMessages: () => set({ chatMessages: [] }),
+  removeChatMessage: (index) =>
+    set((state) => ({
+      chatMessages: state.chatMessages.filter((_, i) => i !== index),
+    })),
+  // Alerts
+  alerts: [],
+  addAlert: (alert) =>
+    set((state) => ({ alerts: [...state.alerts, alert] })),
+  removeAlert: (id) =>
+    set((state) => ({
+      alerts: state.alerts.filter((a) => a.id !== id),
+    })),
 }));

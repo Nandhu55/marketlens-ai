@@ -1,16 +1,7 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-} from 'recharts';
 import {
   BrainCircuit,
   TrendingUp,
@@ -18,198 +9,78 @@ import {
   ShieldAlert,
   Target,
   Activity,
-  BarChart3,
-  ChevronRight,
   Zap,
   AlertTriangle,
-  CheckCircle2,
   Sparkles,
+  RefreshCw,
+  ArrowUpRight,
+  ArrowDownRight,
+  BarChart3,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
 import {
-  STOCKS,
-  generateStockData,
+  KNOWN_SYMBOLS,
   formatPrice,
   formatPercent,
-  type OHLCV,
 } from '@/lib/stock-utils';
-import { GaugeChart, CircularProgress } from '@/components/shared/gauge-chart';
-import { AnimatedCounter, SectionHeader } from '@/components/shared/animated-counter';
+import { CircularProgress } from '@/components/shared/gauge-chart';
+import { LoadingSpinner, EmptyState, SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
 
-// ─── Seeded PRNG based on symbol ──────────────────────────────────────────
-function seededRandom(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s = (s * 16807 + 0) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
+// ─── Types ──────────────────────────────────────────────────────────────────
+interface StockData {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
 }
 
-function symbolSeed(symbol: string): number {
-  return symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) + 42;
-}
-
-// ─── Generate prediction data deterministically ───────────────────────────
 interface PredictionData {
-  bullishProb: number;
-  bearishProb: number;
-  volatilityScore: number;
-  confidenceScore: number;
+  bullishProbability: number;
+  bearishProbability: number;
+  volatility: number;
+  predictedPrice: number;
   upperBound: number;
   lowerBound: number;
-  recommendation: 'BUY' | 'HOLD' | 'SELL';
-  riskLevel: 'Low' | 'Medium' | 'High' | 'Extreme';
-  accuracy: number;
-  precision: number;
-  recall: number;
-  f1Score: number;
-  rmse: number;
-  mae: number;
+  confidence: number;
+  riskLevel: string;
+  recommendation: string;
+  analysis: string;
+  keyFactors: string[];
+  supportLevels: number[];
+  resistanceLevels: number[];
 }
 
-function generatePrediction(symbol: string, currentPrice: number): PredictionData {
-  const rng = seededRandom(symbolSeed(symbol));
-
-  const bullishBase = 35 + rng() * 40;
-  const bullishProb = parseFloat(bullishBase.toFixed(1));
-  const bearishProb = parseFloat((100 - bullishProb).toFixed(1));
-
-  const volatilityScore = parseFloat((20 + rng() * 60).toFixed(1));
-  const confidenceScore = parseFloat((65 + rng() * 30).toFixed(1));
-
-  const spread = currentPrice * (0.02 + rng() * 0.06);
-  const upperBound = parseFloat((currentPrice + spread * (0.4 + rng() * 0.6)).toFixed(2));
-  const lowerBound = parseFloat((currentPrice - spread * (0.4 + rng() * 0.6)).toFixed(2));
-
-  let recommendation: 'BUY' | 'HOLD' | 'SELL';
-  if (bullishProb > 62) recommendation = 'BUY';
-  else if (bullishProb < 38) recommendation = 'SELL';
-  else recommendation = 'HOLD';
-
-  let riskLevel: 'Low' | 'Medium' | 'High' | 'Extreme';
-  if (volatilityScore < 35) riskLevel = 'Low';
-  else if (volatilityScore < 55) riskLevel = 'Medium';
-  else if (volatilityScore < 75) riskLevel = 'High';
-  else riskLevel = 'Extreme';
-
-  return {
-    bullishProb,
-    bearishProb,
-    volatilityScore,
-    confidenceScore,
-    upperBound,
-    lowerBound,
-    recommendation,
-    riskLevel,
-    accuracy: parseFloat((82 + rng() * 12).toFixed(1)),
-    precision: parseFloat((80 + rng() * 12).toFixed(1)),
-    recall: parseFloat((83 + rng() * 12).toFixed(1)),
-    f1Score: parseFloat((81 + rng() * 12).toFixed(1)),
-    rmse: parseFloat((1.5 + rng() * 2.5).toFixed(2)),
-    mae: parseFloat((1.0 + rng() * 2.0).toFixed(2)),
-  };
+interface PredictionResponse {
+  symbol: string;
+  stock: StockData;
+  dataSource: string;
+  indicators?: Record<string, number | undefined>;
+  prediction: PredictionData | null;
+  error?: string;
+  message?: string;
 }
 
-// ─── Historical accuracy chart data ──────────────────────────────────────
-interface AccuracyPoint {
-  date: string;
-  predicted: number;
-  actual: number;
-}
-
-function generateAccuracyData(symbol: string, currentPrice: number): AccuracyPoint[] {
-  const rng = seededRandom(symbolSeed(symbol) + 999);
-  const data: AccuracyPoint[] = [];
-  let price = currentPrice * 0.92;
-  const now = new Date();
-
-  for (let i = 30; i >= 0; i--) {
-    const date = new Date(now);
-    date.setDate(date.getDate() - i);
-    if (date.getDay() === 0 || date.getDay() === 6) continue;
-
-    const change = (rng() - 0.47) * 0.03;
-    const actual = parseFloat((price * (1 + change)).toFixed(2));
-    const noise = (rng() - 0.5) * currentPrice * 0.015;
-    const predicted = parseFloat((actual + noise).toFixed(2));
-
-    data.push({
-      date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      predicted,
-      actual,
-    });
-    price = actual;
-  }
-  return data;
-}
-
-// ─── AI Analysis text generator ──────────────────────────────────────────
-function generateAnalysis(symbol: string, prediction: PredictionData): string[] {
-  const stock = STOCKS[symbol];
-  if (!stock) return ['Analysis unavailable for this symbol.'];
-
-  const name = stock.name;
-  const sector = stock.sector;
-  const price = stock.price;
-  const pe = stock.pe;
-
-  const paragraphs: string[] = [];
-
-  // Paragraph 1: Overview and trend
-  if (prediction.recommendation === 'BUY') {
-    paragraphs.push(
-      `${name} (${symbol}) is currently exhibiting strong bullish momentum within the ${sector} sector. The stock is trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}, and our AI model detects accumulating institutional interest supported by positive volume dynamics. The price action over the past several sessions suggests a constructive pattern with higher lows forming, indicating sustained buying pressure at key support levels. Multiple timeframe analysis confirms the bullish thesis, with the daily, weekly, and monthly charts all aligned in an upward trajectory.`
-    );
-  } else if (prediction.recommendation === 'SELL') {
-    paragraphs.push(
-      `${name} (${symbol}) is showing signs of distribution and weakening momentum within the ${sector} sector. Currently trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}, the stock faces headwinds from deteriorating technical structure and declining volume support. Our AI model has detected a shift from accumulation to distribution phases, with institutional selling pressure increasing over the past several sessions. The risk-reward profile at current levels does not favor long positions, and the probability of further downside is elevated.`
-    );
-  } else {
-    paragraphs.push(
-      `${name} (${symbol}) is in a consolidation phase within the ${sector} sector, trading at $${price.toFixed(2)} with a P/E ratio of ${pe.toFixed(1)}. The stock is caught between competing forces, with neither buyers nor sellers able to establish clear control. Our AI model indicates a period of price discovery where the stock is building a base ahead of the next directional move. Volume patterns suggest reduced participation, typical of a coiling formation that often precedes a significant breakout or breakdown.`
-    );
-  }
-
-  // Paragraph 2: Technical details
-  paragraphs.push(
-    `From a technical perspective, key moving averages are providing important context. The 20-day simple moving average and the 50-day SMA are currently positioned to offer dynamic support at critical price levels. The Relative Strength Index (RSI) reads at moderate levels, suggesting the stock is neither overbought nor oversold at this juncture. Bollinger Band analysis reveals that ${name} is trading within its normal volatility envelope, with the bands indicating a ${prediction.riskLevel.toLowerCase()} volatility regime. The Average True Range (ATR) confirms this assessment, with current readings ${prediction.volatilityScore > 50 ? 'above' : 'below'} historical averages.`
-  );
-
-  // Paragraph 3: Pattern and support/resistance
-  if (prediction.bullishProb > 55) {
-    paragraphs.push(
-      `Pattern recognition algorithms have identified a potential continuation setup, with the price holding above the $${prediction.lowerBound.toFixed(2)} support zone. Resistance is anticipated near the $${prediction.upperBound.toFixed(2)} level, a convergence of previous swing highs and the upper Bollinger Band. A decisive close above this resistance could trigger a rapid move higher, targeting the next major resistance cluster. The MACD histogram is showing ${prediction.bullishProb > 65 ? 'accelerating' : 'moderate'} bullish momentum, while the signal line crossover suggests the trend is intact. Our model assigns a ${prediction.confidenceScore.toFixed(0)}% confidence level to this assessment.`
-    );
-  } else if (prediction.bearishProb > 55) {
-    paragraphs.push(
-      `Pattern recognition indicates a potential breakdown scenario, with critical support at $${prediction.lowerBound.toFixed(2)} under pressure. If this level fails to hold, the next significant support zone lies approximately 3-5% lower. Resistance at $${prediction.upperBound.toFixed(2)} remains firm, and the inability to reclaim this level reinforces the bearish thesis. The MACD histogram is ${prediction.bearishProb > 65 ? 'strongly' : 'moderately'} negative, confirming downward momentum. Volume analysis shows distribution patterns consistent with institutional unwinding. Our model maintains a ${prediction.confidenceScore.toFixed(0)}% confidence level for this bearish outlook.`
-    );
-  } else {
-    paragraphs.push(
-      `Price is currently consolidating between the $${prediction.lowerBound.toFixed(2)} support and $${prediction.upperBound.toFixed(2)} resistance levels. This range-bound behavior suggests market participants are awaiting a catalyst for directional conviction. The MACD is near the zero line, indicating a balance between buying and selling pressure. A breakout above the upper range or breakdown below the lower range would provide the next clear signal. The current squeeze in Bollinger Bands often precedes an explosive move in either direction. Our model maintains ${prediction.confidenceScore.toFixed(0)}% confidence in the neutral assessment.`
-    );
-  }
-
-  // Paragraph 4: Risk assessment and outlook
-  paragraphs.push(
-    `Risk management considerations suggest that position sizing should account for the ${prediction.riskLevel.toLowerCase()} volatility environment currently exhibited by ${name}. The predicted price range of $${prediction.lowerBound.toFixed(2)} to $${prediction.upperBound.toFixed(2)} represents a potential ${((prediction.upperBound - prediction.lowerBound) / price * 100).toFixed(1)}% swing over the forecast horizon. Traders should maintain appropriate stop-loss levels and consider the stock's beta within the broader market context. The AI model's historical accuracy of ${prediction.accuracy.toFixed(1)}% for ${symbol} predictions provides a statistical edge, though no model guarantees future performance. Monitor volume patterns and sector rotation dynamics for early warning signs of trend changes.`
-  );
-
-  return paragraphs;
-}
-
-// ─── Animation variants ──────────────────────────────────────────────────
+// ─── Animation variants ─────────────────────────────────────────────────────
 const containerVariants = {
   hidden: { opacity: 0 },
   show: {
     opacity: 1,
-    transition: { staggerChildren: 0.07, delayChildren: 0.1 },
+    transition: { staggerChildren: 0.06, delayChildren: 0.1 },
   },
 };
 
@@ -218,491 +89,469 @@ const itemVariants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
 };
 
-// ─── Chart tooltip ───────────────────────────────────────────────────────
-function AccuracyTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string; color: string }>; label?: string }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="glass p-3 rounded-lg border border-indigo-500/20">
-      <p className="text-xs text-slate-400 mb-2">{label}</p>
-      {payload.map((entry) => (
-        <div key={entry.dataKey} className="flex items-center gap-2 text-sm">
-          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
-          <span className="text-slate-300 capitalize">{entry.dataKey}:</span>
-          <span className="font-semibold text-white">${entry.value.toFixed(2)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Recommendation color config ─────────────────────────────────────────
-function getRecommendationStyle(rec: string) {
-  switch (rec) {
-    case 'BUY':
-      return {
-        gradient: 'from-emerald-500/30 via-emerald-500/10 to-cyan-500/30',
-        border: 'border-emerald-500/40',
-        badgeBg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-        glow: 'shadow-[0_0_40px_rgba(16,185,129,0.15)]',
-        icon: <TrendingUp className="w-6 h-6 text-emerald-400" />,
-      };
-    case 'SELL':
-      return {
-        gradient: 'from-red-500/30 via-red-500/10 to-orange-500/30',
-        border: 'border-red-500/40',
-        badgeBg: 'bg-red-500/20 text-red-400 border-red-500/30',
-        glow: 'shadow-[0_0_40px_rgba(239,68,68,0.15)]',
-        icon: <TrendingDown className="w-6 h-6 text-red-400" />,
-      };
-    default:
-      return {
-        gradient: 'from-amber-500/30 via-amber-500/10 to-yellow-500/30',
-        border: 'border-amber-500/40',
-        badgeBg: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-        glow: 'shadow-[0_0_40px_rgba(245,158,11,0.15)]',
-        icon: <Activity className="w-6 h-6 text-amber-400" />,
-      };
-  }
-}
-
-function getRiskColor(risk: string) {
-  switch (risk) {
-    case 'Low': return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
-    case 'Medium': return 'bg-amber-500/15 text-amber-400 border-amber-500/20';
-    case 'High': return 'bg-orange-500/15 text-orange-400 border-orange-500/20';
-    case 'Extreme': return 'bg-red-500/15 text-red-400 border-red-500/20';
-    default: return 'bg-slate-500/15 text-slate-400 border-slate-500/20';
-  }
-}
-
-// ─── Main Component ──────────────────────────────────────────────────────
+// ─── Component ──────────────────────────────────────────────────────────────
 export function AIPredictionPage() {
-  const { selectedStock, setSelectedStock } = useAppStore();
+  const { selectedStock } = useAppStore();
+  const [stockSymbol, setStockSymbol] = useState(selectedStock.symbol);
+  const [data, setData] = useState<PredictionResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const symbol = selectedStock.symbol;
-  const [isLoading, setIsLoading] = useState(true);
-  const [dataSource, setDataSource] = useState<'real' | 'fallback' | 'local'>('local');
-  const [realAnalysis, setRealAnalysis] = useState<string | null>(null);
-
-  // Fetch real AI prediction from API
-  const [apiData, setApiData] = useState<Record<string, unknown> | null>(null);
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/prediction?symbol=${stockSymbol}`);
+      const json: PredictionResponse = await res.json();
+      setData(json);
+      if (json.dataSource === 'none' || json.error) {
+        setError(json.error || 'No Live Data Available');
+      }
+    } catch {
+      setError('No Live Data Available');
+    } finally {
+      setLoading(false);
+    }
+  }, [stockSymbol]);
 
   useEffect(() => {
-    let cancelled = false;
+    fetchData();
+  }, [fetchData]);
 
-    fetch(`/api/prediction?symbol=${symbol}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        setDataSource(data.dataSource || 'local');
-        setApiData(data);
-        if (data.analysis) setRealAnalysis(data.analysis);
-      })
-      .catch(() => setDataSource('local'))
-      .finally(() => { if (!cancelled) setIsLoading(false); });
+  const stock = KNOWN_SYMBOLS.find((s) => s.symbol === stockSymbol) || KNOWN_SYMBOLS[0];
+  const pred = data?.prediction;
+  const stk = data?.stock;
+  const isReal = data?.dataSource === 'real';
 
-    return () => { cancelled = true; };
-  }, [symbol]);
-
-  const prediction = useMemo(() => {
-    if (apiData?.prediction) {
-      const p = apiData.prediction as Record<string, unknown>;
-      return {
-        bullishProb: (p.bullishProbability as number) || 50,
-        bearishProb: (p.bearishProbability as number) || 50,
-        volatilityScore: (p.volatility as number) || 30,
-        confidenceScore: (p.confidence as number) || 75,
-        upperBound: (p.upperBound as number) || 0,
-        lowerBound: (p.lowerBound as number) || 0,
-        recommendation: (p.recommendation as 'BUY' | 'HOLD' | 'SELL') || 'HOLD',
-        riskLevel: (p.riskLevel as 'Low' | 'Medium' | 'High' | 'Extreme') || 'Medium',
-        accuracy: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.accuracy || 85)),
-        precision: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.precision || 83)),
-        recall: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.recall || 86)),
-        f1Score: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.f1Score || 84)),
-        rmse: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.rmse || 2.0)),
-        mae: parseFloat(String((apiData.modelPerformance as Record<string, string>)?.mae || 1.5)),
-      };
-    }
-    return generatePrediction(symbol, selectedStock.price);
-  }, [symbol, selectedStock.price, apiData]);
-
-  const accuracyData = useMemo(() => {
-    if (apiData?.actualHistory && apiData?.predictedHistory) {
-      const actual = apiData.actualHistory as number[];
-      const predicted = apiData.predictedHistory as number[];
-      const len = Math.min(actual.length, predicted.length);
-      return Array.from({ length: len }, (_, i) => ({
-        date: `Day ${i + 1}`,
-        actual: actual[i],
-        predicted: predicted[i],
-      }));
-    }
-    return generateAccuracyData(symbol, selectedStock.price);
-  }, [symbol, selectedStock.price, apiData]);
-
-  const analysisTexts = useMemo(() => {
-    if (realAnalysis && dataSource !== 'local') {
-      return realAnalysis.split(/\n\n|\.(?=\s)/).filter((t) => t.trim().length > 10).map((t) => t.trim());
-    }
-    return generateAnalysis(symbol, prediction);
-  }, [symbol, prediction, realAnalysis, dataSource]);
-
-  const recStyle = useMemo(() => getRecommendationStyle(prediction.recommendation), [prediction.recommendation]);
-
-  const handleStockChange = (value: string) => {
-    const stock = STOCKS[value];
-    if (stock) {
-      setSelectedStock({
-        symbol: stock.symbol,
-        name: stock.name,
-        price: stock.price,
-        change: stock.change,
-        changePercent: stock.changePercent,
-        volume: stock.volume,
-        marketCap: stock.marketCap,
-      });
+  const getRecommendationColor = (rec: string) => {
+    switch (rec?.toUpperCase()) {
+      case 'BUY': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+      case 'SELL': return 'bg-red-500/20 text-red-400 border-red-500/30';
+      case 'HOLD': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      default: return 'bg-slate-500/20 text-slate-400 border-slate-500/30';
     }
   };
 
+  const getRiskColor = (risk: string) => {
+    switch (risk?.toLowerCase()) {
+      case 'low': return 'text-emerald-400';
+      case 'medium': return 'text-yellow-400';
+      case 'high': return 'text-red-400';
+      default: return 'text-slate-400';
+    }
+  };
+
+  // ─── Loading State ─────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <SectionHeader
+          title="AI Prediction"
+          subtitle={`Loading prediction for ${stock.name} (${stockSymbol})...`}
+          action={
+            <Skeleton className="h-9 w-[160px] bg-white/5" />
+          }
+        />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="glass-card p-5">
+              <Skeleton className="h-4 w-24 bg-white/5 mb-3" />
+              <Skeleton className="h-8 w-32 bg-white/5 mb-2" />
+              <Skeleton className="h-3 w-16 bg-white/5" />
+            </div>
+          ))}
+        </div>
+        <div className="glass-card p-6">
+          <Skeleton className="h-6 w-48 bg-white/5 mb-6" />
+          <Skeleton className="h-40 w-full bg-white/5" />
+        </div>
+        <div className="glass-card p-6">
+          <Skeleton className="h-6 w-36 bg-white/5 mb-4" />
+          <Skeleton className="h-24 w-full bg-white/5" />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Error / No Data State ─────────────────────────────────────────────
+  if (error || !data || data.dataSource === 'none' || !pred) {
+    return (
+      <div className="space-y-6">
+        <SectionHeader
+          title="AI Prediction"
+          subtitle={`AI-powered stock prediction for ${stock.name} (${stockSymbol})`}
+          action={
+            <Select value={stockSymbol} onValueChange={setStockSymbol}>
+              <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KNOWN_SYMBOLS.map((s) => (
+                  <SelectItem key={s.symbol} value={s.symbol}>
+                    {s.symbol}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        />
+        <EmptyState
+          icon={<BrainCircuit className="w-12 h-12" />}
+          title="No Live Data Available"
+          description={error || `Could not generate an AI prediction for ${stockSymbol}. The service may be temporarily unavailable.`}
+          action={
+            <Button onClick={fetchData} variant="outline" className="gap-2 border-white/10 hover:bg-white/5 text-slate-300">
+              <RefreshCw className="w-4 h-4" />
+              Retry
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  // ─── Loaded State ──────────────────────────────────────────────────────
   return (
     <motion.div
+      className="space-y-6"
       variants={containerVariants}
       initial="hidden"
       animate="show"
-      className="space-y-6"
     >
-      {/* ── Header with Stock Selector ── */}
-      <motion.div variants={itemVariants} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-500/10">
-            <BrainCircuit className="w-6 h-6 text-indigo-400" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-white">AI Prediction</h1>
-            <p className="text-sm text-slate-400">Machine learning-powered price forecasts</p>
-            {dataSource === 'real' && (
-              <Badge className="text-[10px] bg-emerald-500/15 text-emerald-400 border-0 mt-1">AI POWERED</Badge>
-            )}
-          </div>
-        </div>
-        <Select value={symbol} onValueChange={handleStockChange}>
-          <SelectTrigger className="w-[200px] bg-white/5 border-slate-700/50">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {Object.values(STOCKS).map((s) => (
-              <SelectItem key={s.symbol} value={s.symbol}>
-                {s.symbol} — {s.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </motion.div>
+      <SectionHeader
+        title="AI Prediction"
+        subtitle={
+          stk
+            ? `${stk.name} (${stk.symbol}) — $${formatPrice(stk.price)} ${formatPercent(stk.changePercent)}`
+            : `AI-powered prediction for ${stock.name} (${stockSymbol})`
+        }
+        badge={isReal ? { label: 'AI POWERED', color: 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30' } : undefined}
+        action={
+          <Select value={stockSymbol} onValueChange={setStockSymbol}>
+            <SelectTrigger className="w-[160px] bg-white/5 border-white/10 text-white">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {KNOWN_SYMBOLS.map((s) => (
+                <SelectItem key={s.symbol} value={s.symbol}>
+                  {s.symbol}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+      />
 
-      {/* ── Main Prediction Display ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Bullish/Bearish Gauge */}
-        <motion.div variants={itemVariants} className="glass-card p-6">
-          <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <Target className="w-4 h-4 text-indigo-400" />
-            Price Direction
-          </h3>
-          <div className="flex justify-center">
-            <GaugeChart
-              value={prediction.bullishProb}
-              label=""
-              size={180}
-              strokeWidth={14}
-              segments={[
-                { from: 0, to: 38, color: '#ef4444', label: 'Bearish' },
-                { from: 38, to: 62, color: '#f59e0b', label: 'Neutral' },
-                { from: 62, to: 100, color: '#10b981', label: 'Bullish' },
-              ]}
-            />
-          </div>
-          <div className="mt-4 text-center">
-            <span className={cn(
-              'text-2xl font-bold',
-              prediction.bullishProb > 62 ? 'text-emerald-400' : prediction.bullishProb < 38 ? 'text-red-400' : 'text-amber-400'
-            )}>
-              {prediction.bullishProb > 62 ? 'Bullish' : prediction.bullishProb < 38 ? 'Bearish' : 'Neutral'}
-            </span>
-            <p className="text-xs text-slate-500 mt-1">
-              {prediction.bullishProb}% Bullish / {prediction.bearishProb}% Bearish
-            </p>
-          </div>
-        </motion.div>
-
-        {/* Volatility + Confidence Gauges */}
-        <motion.div variants={itemVariants} className="glass-card p-6">
-          <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-            <Activity className="w-4 h-4 text-cyan-400" />
-            Volatility & Confidence
-          </h3>
-          <div className="flex justify-center items-center gap-8">
-            <GaugeChart
-              value={prediction.volatilityScore}
-              label="Volatility"
-              size={130}
-              strokeWidth={10}
-              segments={[
-                { from: 0, to: 35, color: '#10b981', label: 'Low' },
-                { from: 35, to: 55, color: '#f59e0b', label: 'Medium' },
-                { from: 55, to: 75, color: '#f97316', label: 'High' },
-                { from: 75, to: 100, color: '#ef4444', label: 'Extreme' },
-              ]}
-            />
-            <CircularProgress
-              value={prediction.confidenceScore}
-              label="Confidence"
-              size={110}
-              strokeWidth={8}
-              color={prediction.confidenceScore > 80 ? '#10b981' : prediction.confidenceScore > 70 ? '#f59e0b' : '#6366f1'}
-            />
-          </div>
-
-          {/* Expected Price Range */}
-          <div className="mt-6">
-            <p className="text-xs text-slate-400 uppercase tracking-wider mb-3">Expected Price Range</p>
-            <div className="relative h-10 bg-slate-800/50 rounded-lg overflow-hidden">
-              <div
-                className="absolute inset-y-0 bg-gradient-to-r from-indigo-500/20 to-cyan-500/20"
-                style={{
-                  left: `${Math.max(0, ((prediction.lowerBound - selectedStock.price * 0.95) / (selectedStock.price * 0.12)) * 100)}%`,
-                  right: `${Math.max(0, ((selectedStock.price * 1.05 - prediction.upperBound) / (selectedStock.price * 0.12)) * 100)}%`,
-                }}
-              />
-              <div className="absolute inset-y-0 left-1/2 w-px bg-slate-500/30" />
-              <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 flex items-center">
-                <div className="w-2 h-2 rounded-full bg-white shadow-lg shadow-white/30" />
+      {/* ── Bullish / Bearish Probability ───────────────────────────────── */}
+      <motion.div variants={itemVariants} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="glass-card glow-green">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-emerald-500/10">
+                  <TrendingUp className="w-5 h-5 text-emerald-400" />
+                </div>
+                <span className="text-sm font-medium text-slate-300">Bullish Probability</span>
               </div>
-              <div className="absolute bottom-1 left-3 text-[10px] text-emerald-400 font-medium">
-                ${prediction.lowerBound}
-              </div>
-              <div className="absolute bottom-1 right-3 text-[10px] text-cyan-400 font-medium">
-                ${prediction.upperBound}
-              </div>
-              <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] text-slate-300 font-medium">
-                ${formatPrice(selectedStock.price)}
-              </div>
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Recommendation Card */}
-        <motion.div
-          variants={itemVariants}
-          className={cn(
-            'relative rounded-2xl p-6 overflow-hidden',
-            'bg-gradient-to-br',
-            recStyle.gradient,
-            'border',
-            recStyle.border,
-            recStyle.glow
-          )}
-        >
-          <div className="absolute inset-0 backdrop-blur-sm" />
-          <div className="relative z-10">
-            <h3 className="text-sm font-medium text-slate-300 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              AI Recommendation
-            </h3>
-
-            <div className="flex items-center gap-4 mb-4">
-              <div className="p-3 rounded-xl bg-white/5">
-                {recStyle.icon}
-              </div>
-              <Badge className={cn('text-lg font-bold px-4 py-1.5 border', recStyle.badgeBg)}>
-                {prediction.recommendation}
+              <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30" variant="outline">
+                {pred.bullishProbability > 60 ? 'Strong' : pred.bullishProbability > 50 ? 'Moderate' : 'Weak'}
               </Badge>
             </div>
-
-            <p className="text-sm text-slate-300 leading-relaxed mb-4">
-              {prediction.recommendation === 'BUY' && `Based on our AI model's analysis, ${symbol} shows strong potential for upward movement. Multiple indicators align with a bullish outlook.`}
-              {prediction.recommendation === 'SELL' && `Our AI model suggests caution with ${symbol}. Current indicators point to potential downside risk. Consider reducing exposure.`}
-              {prediction.recommendation === 'HOLD' && `${symbol} is in a consolidation phase. Our AI recommends maintaining current positions while waiting for a clearer directional signal.`}
-            </p>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-400">Risk Level</p>
-                <Badge variant="outline" className={cn('mt-1 text-xs border', getRiskColor(prediction.riskLevel))}>
-                  <ShieldAlert className="w-3 h-3 mr-1" />
-                  {prediction.riskLevel}
-                </Badge>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-slate-400">Target Range</p>
-                <p className="text-sm font-semibold text-white mt-1">
-                  ${prediction.lowerBound} — ${prediction.upperBound}
-                </p>
+            <div className="flex items-center gap-6">
+              <CircularProgress
+                value={pred.bullishProbability}
+                label=""
+                size={100}
+                strokeWidth={8}
+                color="#10b981"
+              />
+              <div className="flex-1">
+                <div className="text-3xl font-bold text-emerald-400 mb-2">{pred.bullishProbability}%</div>
+                <Progress value={pred.bullishProbability} className="h-2 bg-white/5 [&>div]:bg-emerald-500" />
               </div>
             </div>
-          </div>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-card glow-red">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-red-500/10">
+                  <TrendingDown className="w-5 h-5 text-red-400" />
+                </div>
+                <span className="text-sm font-medium text-slate-300">Bearish Probability</span>
+              </div>
+              <Badge className="bg-red-500/15 text-red-400 border-red-500/30" variant="outline">
+                {pred.bearishProbability > 60 ? 'Strong' : pred.bearishProbability > 50 ? 'Moderate' : 'Weak'}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-6">
+              <CircularProgress
+                value={pred.bearishProbability}
+                label=""
+                size={100}
+                strokeWidth={8}
+                color="#ef4444"
+              />
+              <div className="flex-1">
+                <div className="text-3xl font-bold text-red-400 mb-2">{pred.bearishProbability}%</div>
+                <Progress value={pred.bearishProbability} className="h-2 bg-white/5 [&>div]:bg-red-500" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* ── Recommendation Badge ────────────────────────────────────────── */}
+      <motion.div variants={itemVariants} className="flex justify-center">
+        <div className={`inline-flex items-center gap-3 px-6 py-3 rounded-2xl border ${getRecommendationColor(pred.recommendation)}`}>
+          <Zap className="w-5 h-5" />
+          <span className="text-xl font-bold tracking-wider">{pred.recommendation}</span>
+        </div>
+      </motion.div>
+
+      {/* ── Summary Cards ──────────────────────────────────────────────── */}
+      <motion.div variants={itemVariants} className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        {[
+          {
+            title: 'Predicted Price',
+            value: `$${formatPrice(pred.predictedPrice)}`,
+            icon: Target,
+            color: 'text-cyan-400',
+            bg: 'bg-cyan-500/10',
+            glow: 'glow-cyan',
+            sub: stk ? `Current: $${formatPrice(stk.price)}` : undefined,
+          },
+          {
+            title: 'Direction',
+            value: pred.bullishProbability > pred.bearishProbability ? 'BULLISH' : 'BEARISH',
+            icon: pred.bullishProbability > pred.bearishProbability ? TrendingUp : TrendingDown,
+            color: pred.bullishProbability > pred.bearishProbability ? 'text-emerald-400' : 'text-red-400',
+            bg: pred.bullishProbability > pred.bearishProbability ? 'bg-emerald-500/10' : 'bg-red-500/10',
+            glow: pred.bullishProbability > pred.bearishProbability ? 'glow-green' : 'glow-red',
+          },
+          {
+            title: 'Volatility',
+            value: `${pred.volatility.toFixed(2)}%`,
+            icon: Activity,
+            color: 'text-purple-400',
+            bg: 'bg-purple-500/10',
+            glow: 'glow-purple',
+          },
+          {
+            title: 'Confidence',
+            value: `${pred.confidence}%`,
+            icon: Sparkles,
+            color: 'text-cyan-400',
+            bg: 'bg-cyan-500/10',
+            glow: 'glow-cyan',
+          },
+          {
+            title: 'Risk Level',
+            value: pred.riskLevel,
+            icon: ShieldAlert,
+            color: getRiskColor(pred.riskLevel),
+            bg: pred.riskLevel?.toLowerCase() === 'low'
+              ? 'bg-emerald-500/10'
+              : pred.riskLevel?.toLowerCase() === 'high'
+              ? 'bg-red-500/10'
+              : 'bg-yellow-500/10',
+            glow: pred.riskLevel?.toLowerCase() === 'low'
+              ? 'glow-green'
+              : pred.riskLevel?.toLowerCase() === 'high'
+              ? 'glow-red'
+              : '',
+          },
+        ].map((card, i) => (
+          <motion.div
+            key={card.title}
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15 + i * 0.05 }}
+            className={`glass-card p-4 ${card.glow}`}
+          >
+            <div className={`p-2 rounded-lg ${card.bg} w-fit mb-2`}>
+              <card.icon className={`w-4 h-4 ${card.color}`} />
+            </div>
+            <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-1">
+              {card.title}
+            </p>
+            <p className={`text-lg font-bold ${card.color}`}>{card.value}</p>
+            {card.sub && (
+              <p className="text-[10px] text-slate-500 mt-1">{card.sub}</p>
+            )}
+          </motion.div>
+        ))}
+      </motion.div>
+
+      {/* ── AI Analysis ────────────────────────────────────────────────── */}
+      <motion.div variants={itemVariants}>
+        <Card className="glass-card">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-white text-base">
+              <BrainCircuit className="w-5 h-5 text-cyan-400" />
+              AI Analysis
+              {isReal && (
+                <Badge className="bg-cyan-500/15 text-cyan-400 border-cyan-500/30 ml-2" variant="outline">
+                  <Sparkles className="w-3 h-3 mr-1" />
+                  AI POWERED
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="prose prose-invert prose-sm max-w-none">
+              <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{pred.analysis}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* ── Key Factors, Support & Resistance ──────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Key Factors */}
+        <motion.div variants={itemVariants}>
+          <Card className="glass-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white text-base">
+                <BarChart3 className="w-5 h-5 text-purple-400" />
+                Key Factors
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="max-h-[280px]">
+                <ul className="space-y-2">
+                  {pred.keyFactors.map((factor, i) => (
+                    <motion.li
+                      key={i}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.3 + i * 0.05 }}
+                      className="flex items-start gap-3 p-2.5 rounded-lg bg-white/[0.02] hover:bg-white/[0.04] transition-colors"
+                    >
+                      <ChevronRightIcon className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
+                      <span className="text-sm text-slate-300">{factor}</span>
+                    </motion.li>
+                  ))}
+                </ul>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Support & Resistance Levels */}
+        <motion.div variants={itemVariants}>
+          <Card className="glass-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-white text-base">
+                <Target className="w-5 h-5 text-yellow-400" />
+                Support & Resistance Levels
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {/* Resistance Levels */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <ArrowUpRight className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Resistance</span>
+                </div>
+                <div className="space-y-2">
+                  {(pred.resistanceLevels || []).map((level, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.35 + i * 0.06 }}
+                      className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]"
+                    >
+                      <span className="text-xs text-slate-500">R{i + 1}</span>
+                      <span className="text-sm font-semibold text-emerald-400">${formatPrice(level)}</span>
+                    </motion.div>
+                  ))}
+                  {(!pred.resistanceLevels || pred.resistanceLevels.length === 0) && (
+                    <span className="text-xs text-slate-500">No resistance levels available</span>
+                  )}
+                </div>
+              </div>
+
+              <Separator className="bg-white/5" />
+
+              {/* Support Levels */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <ArrowDownRight className="w-4 h-4 text-red-400" />
+                  <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Support</span>
+                </div>
+                <div className="space-y-2">
+                  {(pred.supportLevels || []).map((level, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.4 + i * 0.06 }}
+                      className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]"
+                    >
+                      <span className="text-xs text-slate-500">S{i + 1}</span>
+                      <span className="text-sm font-semibold text-red-400">${formatPrice(level)}</span>
+                    </motion.div>
+                  ))}
+                  {(!pred.supportLevels || pred.supportLevels.length === 0) && (
+                    <span className="text-xs text-slate-500">No support levels available</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Price Range Indicator */}
+              <Separator className="bg-white/5" />
+              <div className="p-3 rounded-lg bg-white/[0.02]">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Price Range</span>
+                  <span className="text-xs text-slate-400">
+                    ${formatPrice(pred.lowerBound)} — ${formatPrice(pred.upperBound)}
+                  </span>
+                </div>
+                <div className="relative h-2 bg-white/5 rounded-full">
+                  {pred.predictedPrice > 0 && pred.upperBound > pred.lowerBound && (
+                    <div
+                      className="absolute top-0 h-full bg-gradient-to-r from-red-500/60 via-yellow-500/60 to-emerald-500/60 rounded-full"
+                      style={{
+                        left: '0%',
+                        width: '100%',
+                      }}
+                    />
+                  )}
+                  {pred.predictedPrice > 0 && pred.upperBound > pred.lowerBound && (
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-cyan-400 rounded-full border-2 border-background"
+                      style={{
+                        left: `${((pred.predictedPrice - pred.lowerBound) / (pred.upperBound - pred.lowerBound)) * 100}%`,
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </motion.div>
       </div>
-
-      {/* ── Prediction Breakdown ── */}
-      <motion.div variants={itemVariants} className="glass-card p-6">
-        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-indigo-400" />
-          Prediction Breakdown
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-emerald-400 flex items-center gap-1.5">
-                <TrendingUp className="w-4 h-4" />
-                Bullish Probability
-              </span>
-              <span className="text-sm font-bold text-emerald-400">{prediction.bullishProb}%</span>
-            </div>
-            <div className="relative h-3 bg-slate-800/50 rounded-full overflow-hidden">
-              <motion.div
-                className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
-                initial={{ width: 0 }}
-                animate={{ width: `${prediction.bullishProb}%` }}
-                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.3 }}
-                style={{ filter: 'drop-shadow(0 0 8px rgba(16, 185, 129, 0.4))' }}
-              />
-            </div>
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-red-400 flex items-center gap-1.5">
-                <TrendingDown className="w-4 h-4" />
-                Bearish Probability
-              </span>
-              <span className="text-sm font-bold text-red-400">{prediction.bearishProb}%</span>
-            </div>
-            <div className="relative h-3 bg-slate-800/50 rounded-full overflow-hidden">
-              <motion.div
-                className="absolute inset-y-0 left-0 bg-gradient-to-r from-red-500 to-red-400 rounded-full"
-                initial={{ width: 0 }}
-                animate={{ width: `${prediction.bearishProb}%` }}
-                transition={{ duration: 1.2, ease: 'easeOut' as const, delay: 0.4 }}
-                style={{ filter: 'drop-shadow(0 0 8px rgba(239, 68, 68, 0.4))' }}
-              />
-            </div>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* ── AI Analysis Text ── */}
-      <motion.div variants={itemVariants} className="glass-card p-6">
-        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-          <BrainCircuit className="w-4 h-4 text-purple-400" />
-          AI Analysis Report
-          <Badge variant="outline" className="ml-auto text-[10px] border-purple-500/30 text-purple-400">
-            <Zap className="w-3 h-3 mr-1" />
-            {dataSource === 'real' ? 'Live AI' : 'Generated'}
-          </Badge>
-        </h3>
-        <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
-          {analysisTexts.map((text, i) => (
-            <motion.p
-              key={i}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.4, delay: 0.5 + i * 0.15 }}
-              className="text-sm text-slate-300 leading-relaxed"
-            >
-              {text}
-            </motion.p>
-          ))}
-        </div>
-      </motion.div>
-
-      {/* ── Historical Prediction Accuracy ── */}
-      <motion.div variants={itemVariants} className="glass-card p-6">
-        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-cyan-400" />
-          Historical Prediction Accuracy — Last 30 Days
-        </h3>
-        <div className="h-[300px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={accuracyData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-              <XAxis
-                dataKey="date"
-                tick={{ fill: '#64748b', fontSize: 11 }}
-                tickLine={false}
-                axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                tick={{ fill: '#64748b', fontSize: 11 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v: number) => `$${v.toFixed(0)}`}
-                domain={['auto', 'auto']}
-              />
-              <Tooltip content={<AccuracyTooltip />} />
-              <Line
-                type="monotone"
-                dataKey="actual"
-                stroke="#10b981"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 4, fill: '#10b981' }}
-                name="Actual"
-              />
-              <Line
-                type="monotone"
-                dataKey="predicted"
-                stroke="#6366f1"
-                strokeWidth={2}
-                strokeDasharray="6 3"
-                dot={false}
-                activeDot={{ r: 4, fill: '#6366f1' }}
-                name="Predicted"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="flex items-center justify-center gap-6 mt-2">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <div className="w-4 h-0.5 bg-emerald-500 rounded" />
-            Actual Price
-          </div>
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <div className="w-4 h-0.5 bg-indigo-500 rounded border-dashed" style={{ borderTop: '2px dashed #6366f1' }} />
-            Predicted Price
-          </div>
-        </div>
-      </motion.div>
-
-      {/* ── Model Performance Metrics ── */}
-      <motion.div variants={itemVariants}>
-        <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-amber-400" />
-          Model Performance Metrics
-        </h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {[
-            { label: 'Accuracy', value: `${prediction.accuracy}%`, icon: Target, color: 'text-emerald-400', bgColor: 'bg-emerald-500/10' },
-            { label: 'Precision', value: `${prediction.precision}%`, icon: Zap, color: 'text-cyan-400', bgColor: 'bg-cyan-500/10' },
-            { label: 'Recall', value: `${prediction.recall}%`, icon: Activity, color: 'text-indigo-400', bgColor: 'bg-indigo-500/10' },
-            { label: 'F1-Score', value: `${prediction.f1Score}%`, icon: CheckCircle2, color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
-            { label: 'RMSE', value: prediction.rmse.toFixed(2), icon: AlertTriangle, color: 'text-amber-400', bgColor: 'bg-amber-500/10' },
-            { label: 'MAE', value: prediction.mae.toFixed(2), icon: BarChart3, color: 'text-rose-400', bgColor: 'bg-rose-500/10' },
-          ].map((metric, i) => (
-            <motion.div
-              key={metric.label}
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.3, delay: 0.6 + i * 0.05 }}
-              className="glass-card p-4 text-center group"
-            >
-              <div className={cn('inline-flex p-2 rounded-lg mb-2', metric.bgColor)}>
-                <metric.icon className={cn('w-4 h-4', metric.color)} />
-              </div>
-              <p className="text-xl font-bold text-white">{metric.value}</p>
-              <p className="text-[11px] text-slate-500 uppercase tracking-wider mt-0.5">{metric.label}</p>
-            </motion.div>
-          ))}
-        </div>
-      </motion.div>
     </motion.div>
+  );
+}
+
+// ─── Chevron Right SVG Icon ─────────────────────────────────────────────
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
   );
 }

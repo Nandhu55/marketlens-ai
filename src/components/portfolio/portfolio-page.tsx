@@ -1,17 +1,13 @@
 'use client';
 
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PieChart,
   Pie,
   Cell,
   ResponsiveContainer,
-  AreaChart,
-  XAxis,
-  YAxis,
   Tooltip,
-  Area,
 } from 'recharts';
 import {
   Briefcase,
@@ -25,8 +21,10 @@ import {
   ArrowDownRight,
   PieChart as PieChartIcon,
   BarChart3,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
-import { STOCKS, formatPrice, formatPercent, formatNumber, getChangeColor } from '@/lib/stock-utils';
+import { KNOWN_SYMBOLS, formatPrice, formatPercent, formatNumber, getChangeColor, getCompanyName } from '@/lib/stock-utils';
 import { SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -95,19 +93,56 @@ export function PortfolioPage() {
   const [sortKey, setSortKey] = useState<SortKey>('currentValue');
   const [sortAsc, setSortAsc] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState('');
+  const [pricesLoading, setPricesLoading] = useState(true);
+  const [priceMap, setPriceMap] = useState<Record<string, number>>({});
+
+  // Fetch real prices for all holdings
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchPrices() {
+      if (holdings.length === 0) {
+        if (!cancelled) setPricesLoading(false);
+        return;
+      }
+      if (!cancelled) setPricesLoading(true);
+      const newPriceMap: Record<string, number> = {};
+      const promises = holdings.map(async (h) => {
+        try {
+          const res = await fetch(`/api/stock?symbol=${h.symbol}`);
+          const data = await res.json();
+          if (data.stock && data.stock.price > 0) {
+            newPriceMap[h.symbol] = data.stock.price;
+          } else {
+            newPriceMap[h.symbol] = 0;
+          }
+        } catch {
+          newPriceMap[h.symbol] = 0;
+        }
+      });
+      await Promise.all(promises);
+      if (!cancelled) {
+        setPriceMap(newPriceMap);
+        setPricesLoading(false);
+      }
+    }
+
+    fetchPrices();
+    return () => { cancelled = true; };
+  }, [holdings]);
 
   // Computed portfolio metrics
   const portfolioData = useMemo(() => {
     return holdings.map((h) => {
-      const stock = STOCKS[h.symbol];
-      const currentPrice = stock?.price || 0;
+      const known = KNOWN_SYMBOLS.find((s) => s.symbol === h.symbol);
+      const currentPrice = priceMap[h.symbol] ?? 0;
       const buyValue = h.quantity * h.buyPrice;
       const currentValue = h.quantity * currentPrice;
       const pl = currentValue - buyValue;
       const plPercent = buyValue > 0 ? (pl / buyValue) * 100 : 0;
-      return { ...h, currentPrice, buyValue, currentValue, pl, plPercent, name: stock?.name || h.symbol };
+      return { ...h, currentPrice, buyValue, currentValue, pl, plPercent, name: known?.name || h.symbol };
     });
-  }, [holdings]);
+  }, [holdings, priceMap]);
 
   const summary = useMemo(() => {
     const totalInvestment = portfolioData.reduce((s, h) => s + h.buyValue, 0);
@@ -143,34 +178,11 @@ export function PortfolioPage() {
     }));
   }, [portfolioData]);
 
-  // Portfolio performance history (mock)
-  const performanceData = useMemo(() => {
-    const days = 60;
-    const data: { date: string; value: number }[] = [];
-    const baseValue = summary.totalInvestment * 0.88;
-    const now = new Date();
-
-    for (let i = days; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
-      if (d.getDay() === 0 || d.getDay() === 6) continue;
-      const progress = (days - i) / days;
-      const noise = Math.sin(i * 0.5) * 0.03 + Math.sin(i * 1.3) * 0.02;
-      const value = baseValue * (1 + progress * ((summary.currentValue / baseValue - 1)) + noise);
-      data.push({
-        date: d.toISOString().split('T')[0],
-        value: parseFloat(value.toFixed(2)),
-      });
-    }
-    return data;
-  }, [summary.totalInvestment, summary.currentValue]);
-
   // Add stock
   const handleAdd = useCallback(() => {
     const sym = newSymbol.toUpperCase().trim();
-    if (!STOCKS[sym]) {
-      toast.error('Invalid stock symbol');
-      return;
+    if (!KNOWN_SYMBOLS.find((s) => s.symbol === sym)) {
+      toast.error('Unknown stock symbol — it will still be added');
     }
     const qty = parseFloat(newQuantity);
     const price = parseFloat(newBuyPrice);
@@ -215,7 +227,7 @@ export function PortfolioPage() {
   // Autocomplete
   const filteredSymbols = useMemo(() => {
     if (!symbolSearch) return [];
-    return Object.values(STOCKS)
+    return KNOWN_SYMBOLS
       .filter((s) => s.symbol.toLowerCase().includes(symbolSearch.toLowerCase()) || s.name.toLowerCase().includes(symbolSearch.toLowerCase()))
       .slice(0, 5);
   }, [symbolSearch]);
@@ -339,7 +351,14 @@ export function PortfolioPage() {
             </div>
             <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Current Value</span>
           </div>
-          <p className="text-xl font-bold text-white">${formatNumber(summary.currentValue)}</p>
+          {pricesLoading ? (
+            <div className="flex items-center gap-2 text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading...</span>
+            </div>
+          ) : (
+            <p className="text-xl font-bold text-white">${formatNumber(summary.currentValue)}</p>
+          )}
         </motion.div>
 
         <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className={`glass-card p-4 ${summary.totalPL >= 0 ? 'glow-green' : 'glow-red'}`}>
@@ -349,9 +368,16 @@ export function PortfolioPage() {
             </div>
             <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Total P/L</span>
           </div>
-          <p className={`text-xl font-bold ${getChangeColor(summary.totalPL)}`}>
-            {summary.totalPL >= 0 ? '+' : ''}${formatNumber(summary.totalPL)}
-          </p>
+          {pricesLoading ? (
+            <div className="flex items-center gap-2 text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading...</span>
+            </div>
+          ) : (
+            <p className={`text-xl font-bold ${getChangeColor(summary.totalPL)}`}>
+              {summary.totalPL >= 0 ? '+' : ''}${formatNumber(summary.totalPL)}
+            </p>
+          )}
         </motion.div>
 
         <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} className={`glass-card p-4 ${summary.returnPct >= 0 ? 'glow-green' : 'glow-red'}`}>
@@ -361,9 +387,16 @@ export function PortfolioPage() {
             </div>
             <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Portfolio Return</span>
           </div>
-          <p className={`text-xl font-bold ${getChangeColor(summary.returnPct)}`}>
-            {formatPercent(summary.returnPct)}
-          </p>
+          {pricesLoading ? (
+            <div className="flex items-center gap-2 text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading...</span>
+            </div>
+          ) : (
+            <p className={`text-xl font-bold ${getChangeColor(summary.returnPct)}`}>
+              {formatPercent(summary.returnPct)}
+            </p>
+          )}
         </motion.div>
       </motion.div>
 
@@ -378,6 +411,9 @@ export function PortfolioPage() {
               <Badge variant="outline" className="ml-2 border-white/10 text-slate-400 text-[10px]">
                 {holdings.length} stocks
               </Badge>
+              {pricesLoading && (
+                <Loader2 className="w-3.5 h-3.5 text-slate-500 animate-spin ml-1" />
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -422,17 +458,35 @@ export function PortfolioPage() {
                         <TableCell className="text-sm text-slate-400 hidden sm:table-cell">{h.name}</TableCell>
                         <TableCell className="text-sm text-slate-300 text-right">{h.quantity}</TableCell>
                         <TableCell className="text-sm text-slate-300 text-right">${formatPrice(h.buyPrice)}</TableCell>
-                        <TableCell className="text-sm text-white font-medium text-right">${formatPrice(h.currentPrice)}</TableCell>
-                        <TableCell className="text-sm text-slate-300 text-right hidden md:table-cell">${formatNumber(h.currentValue)}</TableCell>
+                        <TableCell className="text-sm text-white font-medium text-right">
+                          {pricesLoading ? (
+                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+                          ) : h.currentPrice > 0 ? (
+                            `$${formatPrice(h.currentPrice)}`
+                          ) : (
+                            <span className="text-slate-500 text-xs">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-300 text-right hidden md:table-cell">
+                          {pricesLoading ? (
+                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+                          ) : (
+                            `$${formatNumber(h.currentValue)}`
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex flex-col items-end">
-                            <span className={`text-sm font-semibold ${getChangeColor(h.pl)}`}>
-                              {h.pl >= 0 ? '+' : ''}${formatNumber(h.pl)}
-                            </span>
-                            <span className={`text-[11px] ${getChangeColor(h.plPercent)}`}>
-                              {formatPercent(h.plPercent)}
-                            </span>
-                          </div>
+                          {pricesLoading ? (
+                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+                          ) : (
+                            <div className="flex flex-col items-end">
+                              <span className={`text-sm font-semibold ${getChangeColor(h.pl)}`}>
+                                {h.pl >= 0 ? '+' : ''}${formatNumber(h.pl)}
+                              </span>
+                              <span className={`text-[11px] ${getChangeColor(h.plPercent)}`}>
+                                {formatPercent(h.plPercent)}
+                              </span>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-center">
                           <Button
@@ -462,50 +516,68 @@ export function PortfolioPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[220px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={allocationData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={55}
-                    outerRadius={85}
-                    paddingAngle={3}
-                    dataKey="value"
-                    stroke="none"
-                  >
-                    {allocationData.map((entry, idx) => (
-                      <Cell key={idx} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      background: 'rgba(15,23,42,0.95)',
-                      border: '1px solid rgba(99,102,241,0.2)',
-                      borderRadius: '8px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                    formatter={(value: number) => [`$${formatNumber(value)}`, '']}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="space-y-2 mt-2">
-              {allocationData.map((d) => {
-                const pct = summary.currentValue > 0 ? ((d.value / summary.currentValue) * 100).toFixed(1) : '0';
-                return (
-                  <div key={d.name} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} />
-                      <span className="text-slate-300 font-medium">{d.name}</span>
-                    </div>
-                    <span className="text-slate-400">{pct}%</span>
-                  </div>
-                );
-              })}
-            </div>
+            {pricesLoading ? (
+              <div className="h-[220px] flex items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-slate-400">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                  <span className="text-xs">Loading prices...</span>
+                </div>
+              </div>
+            ) : summary.currentValue > 0 ? (
+              <>
+                <div className="h-[220px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={allocationData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={55}
+                        outerRadius={85}
+                        paddingAngle={3}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {allocationData.map((entry, idx) => (
+                          <Cell key={idx} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{
+                          background: 'rgba(15,23,42,0.95)',
+                          border: '1px solid rgba(99,102,241,0.2)',
+                          borderRadius: '8px',
+                          color: '#e2e8f0',
+                          fontSize: '12px',
+                        }}
+                        formatter={(value: number) => [`$${formatNumber(value)}`, '']}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="space-y-2 mt-2">
+                  {allocationData.map((d) => {
+                    const pct = summary.currentValue > 0 ? ((d.value / summary.currentValue) * 100).toFixed(1) : '0';
+                    return (
+                      <div key={d.name} className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} />
+                          <span className="text-slate-300 font-medium">{d.name}</span>
+                        </div>
+                        <span className="text-slate-400">{pct}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <div className="h-[220px] flex items-center justify-center">
+                <div className="flex flex-col items-center gap-2 text-slate-500">
+                  <AlertCircle className="w-6 h-6" />
+                  <span className="text-xs text-center">Unable to fetch current prices.<br/>Allocation chart requires live data.</span>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
@@ -520,52 +592,12 @@ export function PortfolioPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[250px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={performanceData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="perfGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: '#64748b', fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
-                    interval="preserveStartEnd"
-                    tickFormatter={(v) => {
-                      const d = new Date(v);
-                      return `${d.getMonth() + 1}/${d.getDate()}`;
-                    }}
-                  />
-                  <YAxis
-                    tick={{ fill: '#64748b', fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => `$${(v / 1000).toFixed(1)}K`}
-                    width={65}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'rgba(15,23,42,0.95)',
-                      border: '1px solid rgba(99,102,241,0.2)',
-                      borderRadius: '8px',
-                      color: '#e2e8f0',
-                      fontSize: '12px',
-                    }}
-                    formatter={(value: number) => [`$${formatNumber(value)}`, 'Value']}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke="#6366f1"
-                    strokeWidth={2}
-                    fill="url(#perfGradient)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="h-[250px] flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3 text-slate-500">
+                <AlertCircle className="w-8 h-8 text-slate-600" />
+                <p className="text-sm text-center">Requires historical data to display portfolio performance over time.</p>
+                <p className="text-xs text-slate-600">Historical P/L tracking will be available once real-time price data is integrated with portfolio snapshots.</p>
+              </div>
             </div>
           </CardContent>
         </Card>

@@ -1,17 +1,7 @@
 'use client';
 
-import { useMemo, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-} from 'recharts';
 import {
   FileText,
   Download,
@@ -19,18 +9,14 @@ import {
   Newspaper,
   ShieldAlert,
   Clock,
-  TrendingUp,
-  TrendingDown,
-  Activity,
   AlertTriangle,
   CheckCircle,
   FileDown,
-  Printer,
+  Loader2,
+  Copy,
 } from 'lucide-react';
-import { useAppStore } from '@/lib/store';
 import {
-  STOCKS,
-  generateStockData,
+  KNOWN_SYMBOLS,
   formatPrice,
   formatPercent,
   formatNumber,
@@ -41,7 +27,6 @@ import { SectionHeader } from '@/components/shared/animated-counter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
 import {
   Select,
   SelectContent,
@@ -61,6 +46,47 @@ interface ReportHistoryEntry {
   symbol: string;
   date: string;
   title: string;
+}
+
+interface FetchedStockData {
+  symbol: string;
+  name: string;
+  sector: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  volume: number;
+  marketCap: number;
+  pe: number;
+  high52w: number;
+  low52w: number;
+  dayHigh: number;
+  dayLow: number;
+  open: number;
+  previousClose: number;
+}
+
+interface FetchedSentiment {
+  sentiment: string;
+  score: number;
+  articles: Array<{ title: string; sentiment: string }>;
+}
+
+interface FetchedPrediction {
+  predictedPrice: number;
+  predictedChange: number;
+  predictedChangePercent: number;
+  confidence: number;
+  reasoning: string;
+}
+
+interface ReportData {
+  title: string;
+  generatedAt: string;
+  stock: FetchedStockData;
+  sentiment: FetchedSentiment | null;
+  prediction: FetchedPrediction | null;
+  analysis: string;
 }
 
 // ─── Animation variants ───────────────────────────────────────────────────────
@@ -100,7 +126,7 @@ const REPORT_TYPES = [
   {
     id: 'risk' as const,
     title: 'Risk Analysis Report',
-    description: 'Detailed risk assessment including volatility metrics, drawdown analysis, and risk scores.',
+    description: 'Detailed risk assessment including volatility metrics and risk scores.',
     icon: ShieldAlert,
     color: 'text-red-400',
     bg: 'bg-red-500/10',
@@ -110,117 +136,149 @@ const REPORT_TYPES = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export function ReportsPage() {
-  const { selectedStock } = useAppStore();
   const [reportType, setReportType] = useState<ReportType>(null);
-  const [reportStock, setReportStock] = useState(selectedStock.symbol);
-  const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([
-    { id: '1', type: 'prediction', symbol: 'AAPL', date: '2025-01-15', title: 'AAPL Prediction Report' },
-    { id: '2', type: 'news', symbol: 'NVDA', date: '2025-01-14', title: 'NVDA News Summary' },
-    { id: '3', type: 'risk', symbol: 'TSLA', date: '2025-01-13', title: 'TSLA Risk Analysis' },
-  ]);
+  const [reportStock, setReportStock] = useState('AAPL');
+  const [reportHistory, setReportHistory] = useState<ReportHistoryEntry[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [reportData, setReportData] = useState<ReportData | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const stock = STOCKS[reportStock] || STOCKS.AAPL;
-
-  // Generate mock report data
-  const reportData = useMemo(() => {
-    if (!reportType || !stock) return null;
-
-    const histData = generateStockData(reportStock, 30);
-    const priceChange = stock.changePercent;
-    const rsi = 40 + Math.abs(stock.pe % 30);
-    const volatility = stock.pe > 50 ? 'High' : stock.pe > 30 ? 'Medium' : 'Low';
-    const sentimentScore = priceChange > 0 ? 65 + Math.round(Math.abs(priceChange) * 5) : 35 + Math.round(Math.abs(priceChange) * 5);
-    const riskScore = stock.pe > 50 ? 72 : stock.pe > 30 ? 55 : 35;
-
-    const miniChartData = histData.slice(-14).map((d) => ({
-      date: d.date,
-      price: d.close,
-    }));
-
-    const riskBars = [
-      { name: 'Volatility', value: stock.pe > 50 ? 78 : 45, color: '#ef4444' },
-      { name: 'Market Risk', value: 55, color: '#f59e0b' },
-      { name: 'Liquidity', value: 85, color: '#10b981' },
-      { name: 'Concentration', value: 40, color: '#6366f1' },
-    ];
-
-    const typeLabels: Record<string, string> = {
-      prediction: 'Price Prediction',
-      news: 'News Sentiment Summary',
-      risk: 'Risk Assessment',
-    };
-
-    return {
-      title: `${stock.symbol} ${typeLabels[reportType]}`,
-      generatedAt: new Date().toLocaleDateString('en-US', {
-        year: 'numeric', month: 'long', day: 'numeric',
-      }),
-      stock,
-      priceChange,
-      rsi: Math.min(90, rsi),
-      volatility,
-      sentimentScore: Math.min(95, sentimentScore),
-      riskScore,
-      miniChartData,
-      riskBars,
-      analysis:
-        reportType === 'prediction'
-          ? `Based on our LSTM neural network analysis, ${stock.symbol} shows a ${priceChange > 0 ? 'bullish' : 'bearish'} trend. The model predicts continued ${priceChange > 0 ? 'upward' : 'downward'} momentum over the next 7 days with a confidence level of 82%. Key technical indicators support this outlook, with the 20-day SMA trending ${priceChange > 0 ? 'above' : 'below'} the 50-day SMA. Volume analysis confirms ${priceChange > 0 ? 'accumulation' : 'distribution'} patterns.`
-          : reportType === 'news'
-          ? `Recent news coverage for ${stock.name} has been predominantly ${priceChange > 0 ? 'positive' : 'negative'}. Key themes include earnings performance, sector trends, and macroeconomic factors. Sentiment analysis of 156 recent articles indicates a ${sentimentScore}/100 positive sentiment score. Notable headlines suggest ${priceChange > 0 ? 'institutional buying interest' : 'increased caution from major holders'}.`
-          : `The overall risk profile for ${stock.symbol} is assessed as ${riskScore > 60 ? 'Elevated' : riskScore > 40 ? 'Moderate' : 'Low'}. Key risk factors include ${volatility} volatility, market beta of ${stock.pe > 50 ? '1.4' : '1.1'}, and sector-specific headwinds. The maximum drawdown over the past year was ${((1 - stock.low52w / stock.high52w) * 100).toFixed(1)}%. Risk-adjusted returns suggest ${riskScore > 60 ? 'cautious positioning is advised' : 'favorable risk-reward ratio'}.`,
-    };
-  }, [reportType, reportStock, stock]);
-
-  // Generate report
+  // Generate report by fetching real API data
   const handleGenerate = useCallback(
-    (type: ReportType) => {
+    async (type: ReportType) => {
       setReportType(type);
       setIsGenerating(true);
-      setTimeout(() => {
-        setIsGenerating(false);
+      setError(null);
+      setReportData(null);
+
+      try {
+        const symbol = reportStock.toUpperCase();
+
+        // Fetch stock data
+        const stockRes = await fetch(`/api/stock?symbol=${symbol}`);
+        const stockJson = await stockRes.json();
+
+        if (!stockJson.stock || stockJson.stock.price <= 0) {
+          throw new Error(`Unable to fetch real-time data for ${symbol}. The stock may not exist or the data source is temporarily unavailable.`);
+        }
+
+        const stock: FetchedStockData = {
+          symbol: stockJson.stock.symbol,
+          name: stockJson.stock.name,
+          sector: stockJson.stock.sector || 'N/A',
+          price: stockJson.stock.price,
+          change: stockJson.stock.change,
+          changePercent: stockJson.stock.changePercent,
+          volume: stockJson.stock.volume,
+          marketCap: stockJson.stock.marketCap,
+          pe: stockJson.stock.pe || 0,
+          high52w: stockJson.stock.high52w || 0,
+          low52w: stockJson.stock.low52w || 0,
+          dayHigh: stockJson.stock.dayHigh || 0,
+          dayLow: stockJson.stock.dayLow || 0,
+          open: stockJson.stock.open || 0,
+          previousClose: stockJson.stock.previousClose || 0,
+        };
+
+        // Fetch sentiment data
+        let sentiment: FetchedSentiment | null = null;
+        try {
+          const sentRes = await fetch(`/api/sentiment?symbol=${symbol}`);
+          const sentJson = await sentRes.json();
+          if (sentJson.sentiment !== undefined) {
+            sentiment = {
+              sentiment: sentJson.sentiment || 'N/A',
+              score: sentJson.score || 0,
+              articles: (sentJson.articles || []).slice(0, 5),
+            };
+          }
+        } catch {
+          // sentiment fetch failed, continue without it
+        }
+
+        // Fetch prediction data
+        let prediction: FetchedPrediction | null = null;
+        try {
+          const predRes = await fetch(`/api/prediction?symbol=${symbol}`);
+          const predJson = await predRes.json();
+          if (predJson.prediction) {
+            prediction = {
+              predictedPrice: predJson.prediction.predictedPrice || 0,
+              predictedChange: predJson.prediction.predictedChange || 0,
+              predictedChangePercent: predJson.prediction.predictedChangePercent || 0,
+              confidence: predJson.prediction.confidence || 0,
+              reasoning: predJson.prediction.reasoning || '',
+            };
+          }
+        } catch {
+          // prediction fetch failed, continue without it
+        }
+
+        // Build analysis text from real data
+        let analysis = '';
+        const trend = stock.changePercent > 0 ? 'bullish' : stock.changePercent < 0 ? 'bearish' : 'neutral';
+
+        if (type === 'prediction') {
+          if (prediction) {
+            analysis = `Based on AI analysis, ${stock.symbol} (${stock.name}) currently shows a ${trend} trend with a price of $${stock.price.toFixed(2)} (${stock.changePercent >= 0 ? '+' : ''}${stock.changePercent.toFixed(2)}%). ` +
+              `The AI model predicts a target price of $${prediction.predictedPrice.toFixed(2)} over the next 7 days, representing a ${prediction.predictedChangePercent >= 0 ? '+' : ''}${prediction.predictedChangePercent.toFixed(2)}% change. ` +
+              `Confidence level: ${prediction.confidence}%. ${prediction.reasoning}`;
+          } else {
+            analysis = `Unable to generate prediction analysis for ${stock.symbol}. The AI prediction service is currently unavailable. Current price: $${stock.price.toFixed(2)} (${stock.changePercent >= 0 ? '+' : ''}${stock.changePercent.toFixed(2)}%).`;
+          }
+        } else if (type === 'news') {
+          if (sentiment && sentiment.articles.length > 0) {
+            const articleList = sentiment.articles.map((a) => `• ${a.title} (${a.sentiment})`).join('\n');
+            analysis = `News sentiment analysis for ${stock.symbol} (${stock.name}). ` +
+              `Overall sentiment: ${sentiment.sentiment} (score: ${sentiment.score}/100).\n\n` +
+              `Recent news articles:\n${articleList}\n\n` +
+              `The ${sentiment.sentiment.toLowerCase()} sentiment suggests ${sentiment.score > 60 ? 'potential positive momentum' : sentiment.score < 40 ? 'caution is advised' : 'a mixed market outlook'} for this stock.`;
+          } else {
+            analysis = `Unable to generate news sentiment analysis for ${stock.symbol}. No recent news data is currently available. Current price: $${stock.price.toFixed(2)} (${stock.changePercent >= 0 ? '+' : ''}${stock.changePercent.toFixed(2)}%).`;
+          }
+        } else {
+          const riskLevel = stock.pe > 0 && stock.pe > 50 ? 'elevated' : stock.pe > 0 && stock.pe > 25 ? 'moderate' : 'low';
+          const volatilityNote = stock.dayHigh > 0 && stock.dayLow > 0
+            ? `Today's trading range: $${stock.dayLow.toFixed(2)} - $${stock.dayHigh.toFixed(2)} (spread: $${(stock.dayHigh - stock.dayLow).toFixed(2)}).`
+            : '';
+          analysis = `Risk assessment for ${stock.symbol} (${stock.name}). ` +
+            `Current price: $${stock.price.toFixed(2)} with a P/E ratio of ${stock.pe > 0 ? stock.pe.toFixed(1) : 'N/A'}. ` +
+            `The risk profile is assessed as ${riskLevel} based on current valuation metrics. ${volatilityNote} ` +
+            `52-week range: $${stock.low52w > 0 ? stock.low52w.toFixed(2) : 'N/A'} - $${stock.high52w > 0 ? stock.high52w.toFixed(2) : 'N/A'}. ` +
+            `Volume: ${formatNumber(stock.volume)}. Market cap: $${formatNumber(stock.marketCap)}.`;
+        }
+
+        const data: ReportData = {
+          title: `${stock.symbol} ${REPORT_TYPES.find((t) => t.id === type)?.title || 'Report'}`,
+          generatedAt: new Date().toLocaleDateString('en-US', {
+            year: 'numeric', month: 'long', day: 'numeric',
+          }),
+          stock,
+          sentiment,
+          prediction,
+          analysis,
+        };
+
+        setReportData(data);
         const newEntry: ReportHistoryEntry = {
           id: Date.now().toString(),
           type,
-          symbol: reportStock,
+          symbol,
           date: new Date().toISOString().split('T')[0],
-          title: `${reportStock} ${REPORT_TYPES.find((t) => t.id === type)?.title || 'Report'}`,
+          title: data.title,
         };
         setReportHistory((prev) => [newEntry, ...prev]);
         toast.success('Report generated successfully');
-      }, 1200);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unable to generate report';
+        setError(msg);
+        toast.error('Failed to generate report');
+      } finally {
+        setIsGenerating(false);
+      }
     },
     [reportStock]
   );
-
-  // Download CSV
-  const handleDownloadCSV = useCallback(() => {
-    if (!reportData) return;
-    const { stock: s, miniChartData, riskBars } = reportData;
-    const rows = [
-      [`MarketLens AI Report - ${reportData.title}`],
-      [`Generated: ${reportData.generatedAt}`],
-      [`Stock: ${s.symbol} - ${s.name}`],
-      [`Current Price: $${s.price}`],
-      [`Change: ${s.changePercent.toFixed(2)}%`],
-      [],
-      ['Date', 'Price'],
-      ...miniChartData.map((d) => [d.date, d.price.toFixed(2)]),
-      [],
-      ['Risk Metric', 'Score'],
-      ...riskBars.map((r) => [r.name, r.value]),
-    ];
-    const csv = rows.map((r) => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${s.symbol}_report_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success('CSV downloaded');
-  }, [reportData]);
 
   // Download text report
   const handleDownloadTXT = useCallback(() => {
@@ -234,11 +292,11 @@ export function ReportsPage() {
 Generated: ${reportData.generatedAt}
 Stock: ${s.symbol} — ${s.name}
 Sector: ${s.sector}
-Current Price: $${s.price}
-Change: ${s.change > 0 ? '+' : ''}${s.change.toFixed(2)} (${s.changePercent.toFixed(2)}%)
-52-Week High: $${s.high52w}  |  Low: $${s.low52w}
+Current Price: $${s.price.toFixed(2)}
+Change: ${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)} (${s.changePercent >= 0 ? '+' : ''}${s.changePercent.toFixed(2)}%)
+52-Week High: $${s.high52w > 0 ? s.high52w.toFixed(2) : 'N/A'}  |  Low: $${s.low52w > 0 ? s.low52w.toFixed(2) : 'N/A'}
 Market Cap: $${formatNumber(s.marketCap)}
-P/E Ratio: ${s.pe}
+P/E Ratio: ${s.pe > 0 ? s.pe.toFixed(1) : 'N/A'}
 
 ───────────────────────────────────────────────
   ANALYSIS
@@ -246,17 +304,10 @@ P/E Ratio: ${s.pe}
 
 ${reportData.analysis}
 
+${reportData.prediction ? `───────────────────────────────────────────────\n  PREDICTION\n───────────────────────────────────────────────\n\nTarget Price: $${reportData.prediction.predictedPrice.toFixed(2)}\nChange: ${reportData.prediction.predictedChangePercent >= 0 ? '+' : ''}${reportData.prediction.predictedChangePercent.toFixed(2)}%\nConfidence: ${reportData.prediction.confidence}%\n` : ''}
+${reportData.sentiment ? `───────────────────────────────────────────────\n  SENTIMENT\n───────────────────────────────────────────────\n\nOverall: ${reportData.sentiment.sentiment} (${reportData.sentiment.score}/100)\n` : ''}
 ───────────────────────────────────────────────
-  KEY METRICS
-───────────────────────────────────────────────
-
-Sentiment Score: ${reportData.sentimentScore}/100
-Risk Score: ${reportData.riskScore}/100
-Volatility: ${reportData.volatility}
-RSI (14): ${reportData.rsi}
-
-───────────────────────────────────────────────
-  Disclaimer: This report is generated by AI and 
+  Disclaimer: This report is generated by AI and
   should not be considered as financial advice.
 ═══════════════════════════════════════════════
 `.trim();
@@ -269,6 +320,17 @@ RSI (14): ${reportData.rsi}
     a.click();
     URL.revokeObjectURL(url);
     toast.success('Report downloaded');
+  }, [reportData]);
+
+  // Copy report to clipboard
+  const handleCopy = useCallback(async () => {
+    if (!reportData) return;
+    try {
+      await navigator.clipboard.writeText(reportData.analysis);
+      toast.success('Analysis copied to clipboard');
+    } catch {
+      toast.error('Failed to copy');
+    }
   }, [reportData]);
 
   return (
@@ -287,7 +349,7 @@ RSI (14): ${reportData.rsi}
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Object.values(STOCKS).map((s) => (
+              {KNOWN_SYMBOLS.map((s) => (
                 <SelectItem key={s.symbol} value={s.symbol}>
                   {s.symbol}
                 </SelectItem>
@@ -331,17 +393,32 @@ RSI (14): ${reportData.rsi}
           animate={{ opacity: 1 }}
           className="glass-card p-12 flex flex-col items-center justify-center gap-4"
         >
-          <motion.div
-            className="w-12 h-12 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full"
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}
-          />
-          <p className="text-slate-400 text-sm">Generating report...</p>
+          <Loader2 className="w-10 h-10 text-indigo-400 animate-spin" />
+          <p className="text-slate-400 text-sm">Fetching real data and generating report...</p>
+        </motion.div>
+      )}
+
+      {/* ── Error State ────────────────────────────────────────────────────── */}
+      {error && !isGenerating && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="glass-card p-8 flex flex-col items-center justify-center gap-4"
+        >
+          <AlertTriangle className="w-10 h-10 text-amber-400" />
+          <p className="text-slate-300 text-sm text-center max-w-md">{error}</p>
+          <Button
+            variant="outline"
+            className="border-white/10 text-slate-300 hover:bg-white/5"
+            onClick={() => setError(null)}
+          >
+            Dismiss
+          </Button>
         </motion.div>
       )}
 
       {/* ── Report Preview ─────────────────────────────────────────────────── */}
-      {reportData && !isGenerating && (
+      {reportData && !isGenerating && !error && (
         <motion.div variants={itemVariants}>
           <Card className="glass-card">
             <CardHeader>
@@ -360,10 +437,10 @@ RSI (14): ${reportData.rsi}
                     variant="outline"
                     size="sm"
                     className="border-white/10 text-slate-300 hover:bg-white/5 gap-1.5"
-                    onClick={handleDownloadCSV}
+                    onClick={handleCopy}
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    CSV
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy
                   </Button>
                   <Button
                     variant="outline"
@@ -393,102 +470,77 @@ RSI (14): ${reportData.rsi}
                   <p className="text-xs text-slate-500">{reportData.stock.sector}</p>
                 </div>
                 <div className="p-3 rounded-xl bg-white/[0.03]">
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Volatility</p>
-                  <p className="text-lg font-bold text-white">{reportData.volatility}</p>
-                  <p className="text-xs text-slate-500">P/E: {reportData.stock.pe}</p>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Volume</p>
+                  <p className="text-lg font-bold text-white">{formatNumber(reportData.stock.volume)}</p>
+                  <p className="text-xs text-slate-500">P/E: {reportData.stock.pe > 0 ? reportData.stock.pe.toFixed(1) : 'N/A'}</p>
                 </div>
                 <div className="p-3 rounded-xl bg-white/[0.03]">
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">RSI (14)</p>
-                  <p className={`text-lg font-bold ${reportData.rsi > 70 ? 'text-red-400' : reportData.rsi < 30 ? 'text-emerald-400' : 'text-white'}`}>
-                    {reportData.rsi}
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">52-Week Range</p>
+                  <p className="text-sm font-bold text-white">
+                    {reportData.stock.low52w > 0 ? `$${formatPrice(reportData.stock.low52w)}` : '—'}
                   </p>
-                  <p className="text-xs text-slate-500">{reportData.rsi > 70 ? 'Overbought' : reportData.rsi < 30 ? 'Oversold' : 'Neutral'}</p>
+                  <p className="text-xs text-slate-500">
+                    to {reportData.stock.high52w > 0 ? `$${formatPrice(reportData.stock.high52w)}` : '—'}
+                  </p>
                 </div>
               </div>
 
-              {/* Charts + Gauges row */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Mini price chart */}
-                <div className="lg:col-span-2 p-4 rounded-xl bg-white/[0.02]">
-                  <p className="text-xs text-slate-400 font-medium mb-3">14-Day Price Trend</p>
-                  <div className="h-[180px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={reportData.miniChartData}>
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fill: '#64748b', fontSize: 10 }}
-                          tickLine={false}
-                          axisLine={{ stroke: 'rgba(148,163,184,0.1)' }}
-                          tickFormatter={(v) => {
-                            const d = new Date(v);
-                            return `${d.getMonth() + 1}/${d.getDate()}`;
-                          }}
-                        />
-                        <YAxis
-                          tick={{ fill: '#64748b', fontSize: 10 }}
-                          tickLine={false}
-                          axisLine={false}
-                          tickFormatter={(v) => `$${v.toFixed(0)}`}
-                          width={50}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            background: 'rgba(15,23,42,0.95)',
-                            border: '1px solid rgba(99,102,241,0.2)',
-                            borderRadius: '8px',
-                            color: '#e2e8f0',
-                            fontSize: '11px',
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="price"
-                          stroke="#6366f1"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                {/* Gauge + Risk bars */}
-                <div className="space-y-4">
+              {/* Sentiment & Prediction Gauges */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {reportData.sentiment && (
                   <div className="p-4 rounded-xl bg-white/[0.02] flex flex-col items-center">
-                    <p className="text-xs text-slate-400 font-medium mb-2">
-                      {reportType === 'risk' ? 'Risk Score' : 'Sentiment Score'}
-                    </p>
+                    <p className="text-xs text-slate-400 font-medium mb-2">Sentiment Score</p>
                     <GaugeChart
-                      value={reportType === 'risk' ? reportData.riskScore : reportData.sentimentScore}
+                      value={reportData.sentiment.score}
                       label=""
                       size={140}
                       strokeWidth={10}
                     />
+                    <p className="text-xs text-slate-400 mt-1">Overall: {reportData.sentiment.sentiment}</p>
                   </div>
-                  {reportType === 'risk' && (
-                    <div className="p-4 rounded-xl bg-white/[0.02] space-y-2">
-                      <p className="text-xs text-slate-400 font-medium mb-2">Risk Breakdown</p>
-                      {reportData.riskBars.map((bar) => (
-                        <div key={bar.name} className="space-y-1">
-                          <div className="flex justify-between text-[11px]">
-                            <span className="text-slate-400">{bar.name}</span>
-                            <span style={{ color: bar.color }}>{bar.value}%</span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${bar.value}%` }}
-                              transition={{ duration: 0.8, ease: 'easeOut' as const }}
-                              className="h-full rounded-full"
-                              style={{ background: bar.color }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                )}
+                {reportData.prediction && (
+                  <div className="p-4 rounded-xl bg-white/[0.02] flex flex-col items-center">
+                    <p className="text-xs text-slate-400 font-medium mb-2">Prediction Confidence</p>
+                    <GaugeChart
+                      value={reportData.prediction.confidence}
+                      label=""
+                      size={140}
+                      strokeWidth={10}
+                    />
+                    <p className="text-xs text-slate-400 mt-1">
+                      Target: ${reportData.prediction.predictedPrice.toFixed(2)} ({reportData.prediction.predictedChangePercent >= 0 ? '+' : ''}{reportData.prediction.predictedChangePercent.toFixed(2)}%)
+                    </p>
+                  </div>
+                )}
               </div>
+
+              {/* News Articles (if available) */}
+              {reportData.sentiment && reportData.sentiment.articles.length > 0 && (
+                <div className="p-4 rounded-xl bg-white/[0.02]">
+                  <p className="text-xs text-slate-400 font-medium mb-3 flex items-center gap-1.5">
+                    <Newspaper className="w-3.5 h-3.5" />
+                    Recent News Articles
+                  </p>
+                  <div className="space-y-2">
+                    {reportData.sentiment.articles.map((article, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm">
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] shrink-0 mt-0.5 ${
+                            article.sentiment === 'Positive' ? 'border-emerald-500/30 text-emerald-400' :
+                            article.sentiment === 'Negative' ? 'border-red-500/30 text-red-400' :
+                            'border-slate-500/30 text-slate-400'
+                          }`}
+                        >
+                          {article.sentiment}
+                        </Badge>
+                        <span className="text-slate-300">{article.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Analysis Text */}
               <div className="p-4 rounded-xl bg-white/[0.02]">
@@ -496,7 +548,7 @@ RSI (14): ${reportData.rsi}
                   <Brain className="w-3.5 h-3.5" />
                   AI Analysis
                 </p>
-                <p className="text-sm text-slate-300 leading-relaxed">{reportData.analysis}</p>
+                <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{reportData.analysis}</p>
               </div>
             </CardContent>
           </Card>
@@ -541,7 +593,7 @@ RSI (14): ${reportData.rsi}
                   );
                 })}
                 {reportHistory.length === 0 && (
-                  <p className="text-sm text-slate-500 text-center py-8">No reports generated yet.</p>
+                  <p className="text-sm text-slate-500 text-center py-8">No reports generated yet. Select a report type above to get started.</p>
                 )}
               </div>
             </ScrollArea>

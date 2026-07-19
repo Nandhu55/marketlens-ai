@@ -15,16 +15,6 @@ model User {
   updatedAt DateTime @updatedAt
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
 model PortfolioItem {
   id          String   @id @default(cuid())
   symbol      String
@@ -47,4 +37,25 @@ model SearchHistory {
   id        String   @id @default(cuid())
   query     String
   searchedAt DateTime @default(now())
+}
+
+model AlertItem {
+  id        String   @id @default(cuid())
+  symbol    String
+  type      String   // "price_above", "price_below", "rsi_above", "rsi_below", "volume_spike"
+  value     Float
+  triggered Boolean  @default(false)
+  triggeredAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PredictionLog {
+  id          String   @id @default(cuid())
+  symbol      String
+  price       Float
+  prediction  String   // JSON of the prediction
+  recommendation String
+  confidence  Float
+  createdAt   DateTime @default(now())
 }

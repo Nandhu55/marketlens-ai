@@ -15,6 +15,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Zap,
+  Filter,
+  MessageSquare,
+  Bell,
 } from 'lucide-react';
 import { useAppStore, type PageId } from '@/lib/store';
 import { cn } from '@/lib/utils';
@@ -36,6 +39,9 @@ const navItems: NavItem[] = [
   { id: 'news-sentiment', label: 'News Sentiment', icon: Newspaper },
   { id: 'forecast', label: 'Forecast', icon: TrendingUp },
   { id: 'portfolio', label: 'Portfolio', icon: Briefcase },
+  { id: 'screener', label: 'Screener', icon: Filter },
+  { id: 'ai-assistant', label: 'AI Assistant', icon: MessageSquare },
+  { id: 'alerts', label: 'Alerts', icon: Bell },
   { id: 'reports', label: 'Reports', icon: FileBarChart },
   { id: 'settings', label: 'Settings', icon: Settings },
   { id: 'about', label: 'About', icon: Info },

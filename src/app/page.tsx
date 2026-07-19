@@ -16,6 +16,9 @@ const TechnicalAnalysisPage = dynamic(() => import('@/components/technical/techn
 const NewsSentimentPage = dynamic(() => import('@/components/news/news-sentiment-page').then(m => ({ default: m.NewsSentimentPage })), { loading: () => <PageLoading />, ssr: false });
 const ForecastPage = dynamic(() => import('@/components/forecast/forecast-page').then(m => ({ default: m.ForecastPage })), { loading: () => <PageLoading />, ssr: false });
 const PortfolioPage = dynamic(() => import('@/components/portfolio/portfolio-page').then(m => ({ default: m.PortfolioPage })), { loading: () => <PageLoading />, ssr: false });
+const ScreenerPage = dynamic(() => import('@/components/screener/screener-page').then(m => ({ default: m.ScreenerPage })), { loading: () => <PageLoading />, ssr: false });
+const AIAssistantPage = dynamic(() => import('@/components/ai-assistant/ai-assistant-page').then(m => ({ default: m.AIAssistantPage })), { loading: () => <PageLoading />, ssr: false });
+const AlertsPage = dynamic(() => import('@/components/alerts/alerts-page').then(m => ({ default: m.AlertsPage })), { loading: () => <PageLoading />, ssr: false });
 const ReportsPage = dynamic(() => import('@/components/reports/reports-page').then(m => ({ default: m.ReportsPage })), { loading: () => <PageLoading />, ssr: false });
 const SettingsPage = dynamic(() => import('@/components/settings/settings-page').then(m => ({ default: m.SettingsPage })), { loading: () => <PageLoading />, ssr: false });
 const AboutPage = dynamic(() => import('@/components/about/about-page').then(m => ({ default: m.AboutPage })), { loading: () => <PageLoading />, ssr: false });
@@ -28,6 +31,9 @@ const pageComponents: Record<PageId, React.ComponentType> = {
   'news-sentiment': NewsSentimentPage,
   'forecast': ForecastPage,
   'portfolio': PortfolioPage,
+  'screener': ScreenerPage,
+  'ai-assistant': AIAssistantPage,
+  'alerts': AlertsPage,
   'reports': ReportsPage,
   'settings': SettingsPage,
   'about': AboutPage,
@@ -141,7 +147,7 @@ export default function Home() {
             <h2 className="text-sm font-semibold text-slate-300 capitalize">
               {activePage.replace(/-/g, ' ')}
             </h2>
-            <span className="text-[10px] text-slate-600 font-mono">v2.0.0</span>
+            <span className="text-[10px] text-slate-600 font-mono">v3.0.0</span>
           </div>
           <MarketClock />
         </header>
@@ -169,7 +175,7 @@ export default function Home() {
         <footer className="h-10 border-t border-white/5 flex items-center justify-between px-6 text-[11px] text-slate-600 shrink-0 bg-[#0a0e1a]/80 backdrop-blur-xl">
           <span>&copy; 2025 MarketLens AI &mdash; Intelligent Stock Analytics</span>
           <span className="flex items-center gap-1">
-            {isLive ? 'Real-time via Web AI + LLM' : 'Powered by LSTM + FinBERT'}
+            {isLive ? 'Real-time via Web AI + LLM' : 'Connecting...'}
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
           </span>
         </footer>
