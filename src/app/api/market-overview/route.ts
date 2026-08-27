@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchMarketOverview, fetchRealStockQuote } from '@/lib/ai-service';
+import { getMarketDataProviderStatus, getIndianMarketStatus } from '@/lib/market-data';
 
 async function fetchQuotesSequentially(symbols: string[]) {
   const realQuotes: Record<string, {
@@ -12,7 +13,6 @@ async function fetchQuotesSequentially(symbols: string[]) {
     fetchedAt: string;
   }> = {};
 
-  // Fetch quotes in parallel with a per-stock timeout
   const results = await Promise.allSettled(
     symbols.map((sym) =>
       Promise.race([
@@ -44,9 +44,11 @@ export async function GET() {
   try {
     const symbols = ['AAPL', 'TSLA', 'MSFT', 'NVDA'];
 
-    const [overview, quotes] = await Promise.all([
+    const [overview, quotes, providerStatus, indianMarketStatus] = await Promise.all([
       fetchMarketOverview().catch(() => null),
       fetchQuotesSequentially(symbols),
+      getMarketDataProviderStatus().catch(() => ({ indian: 'UNKNOWN' as const, provider: 'upstox' })),
+      Promise.resolve(getIndianMarketStatus()),
     ]);
 
     return NextResponse.json({
@@ -62,6 +64,8 @@ export async function GET() {
       },
       quotes,
       symbolsWithRealData: Object.keys(quotes),
+      providerStatus,
+      indianMarketStatus,
     });
   } catch (error) {
     console.error('Market overview error:', error);
@@ -78,6 +82,8 @@ export async function GET() {
       },
       quotes: {},
       symbolsWithRealData: [],
+      providerStatus: { indian: 'UNKNOWN' as const, provider: 'upstox' },
+      indianMarketStatus: 'UNKNOWN',
     });
   }
 }

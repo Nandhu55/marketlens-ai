@@ -499,6 +499,7 @@ export function getChangeColor(value: number): string {
 // ── Known stock symbols for search/autocomplete ────────────────────
 
 export const KNOWN_SYMBOLS: Array<{ symbol: string; name: string; sector: string; exchange: string }> = [
+  // US symbols
   { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology', exchange: 'NASDAQ' },
   { symbol: 'TSLA', name: 'Tesla Inc.', sector: 'Automotive', exchange: 'NASDAQ' },
   { symbol: 'MSFT', name: 'Microsoft Corp.', sector: 'Technology', exchange: 'NASDAQ' },
@@ -506,9 +507,6 @@ export const KNOWN_SYMBOLS: Array<{ symbol: string; name: string; sector: string
   { symbol: 'GOOG', name: 'Alphabet Inc.', sector: 'Technology', exchange: 'NASDAQ' },
   { symbol: 'META', name: 'Meta Platforms Inc.', sector: 'Technology', exchange: 'NASDAQ' },
   { symbol: 'AMZN', name: 'Amazon.com Inc.', sector: 'Consumer Cyclical', exchange: 'NASDAQ' },
-  { symbol: 'INFY', name: 'Infosys Ltd.', sector: 'IT Services', exchange: 'NYSE' },
-  { symbol: 'TCS', name: 'Tata Consultancy Services', sector: 'IT Services', exchange: 'NSE' },
-  { symbol: 'RELIANCE', name: 'Reliance Industries Ltd.', sector: 'Conglomerate', exchange: 'NSE' },
   { symbol: 'JPM', name: 'JPMorgan Chase & Co.', sector: 'Financial Services', exchange: 'NYSE' },
   { symbol: 'V', name: 'Visa Inc.', sector: 'Financial Services', exchange: 'NYSE' },
   { symbol: 'WMT', name: 'Walmart Inc.', sector: 'Consumer Staples', exchange: 'NYSE' },
@@ -519,6 +517,31 @@ export const KNOWN_SYMBOLS: Array<{ symbol: string; name: string; sector: string
   { symbol: 'HD', name: 'Home Depot Inc.', sector: 'Consumer Cyclical', exchange: 'NYSE' },
   { symbol: 'DIS', name: 'Walt Disney Co.', sector: 'Communication', exchange: 'NYSE' },
   { symbol: 'NFLX', name: 'Netflix Inc.', sector: 'Communication', exchange: 'NASDAQ' },
+  // Indian symbols (NSE)
+  { symbol: 'RELIANCE', name: 'Reliance Industries Ltd.', sector: 'Conglomerate', exchange: 'NSE' },
+  { symbol: 'TCS', name: 'Tata Consultancy Services Ltd.', sector: 'IT Services', exchange: 'NSE' },
+  { symbol: 'INFY', name: 'Infosys Ltd.', sector: 'IT Services', exchange: 'NSE' },
+  { symbol: 'HDFCBANK', name: 'HDFC Bank Ltd.', sector: 'Banking', exchange: 'NSE' },
+  { symbol: 'ICICIBANK', name: 'ICICI Bank Ltd.', sector: 'Banking', exchange: 'NSE' },
+  { symbol: 'SBIN', name: 'State Bank of India', sector: 'Banking', exchange: 'NSE' },
+  { symbol: 'WIPRO', name: 'Wipro Ltd.', sector: 'IT Services', exchange: 'NSE' },
+  { symbol: 'ITC', name: 'ITC Ltd.', sector: 'FMCG', exchange: 'NSE' },
+  { symbol: 'BHARTIARTL', name: 'Bharti Airtel Ltd.', sector: 'Telecom', exchange: 'NSE' },
+  { symbol: 'HINDUNILVR', name: 'Hindustan Unilever Ltd.', sector: 'FMCG', exchange: 'NSE' },
+  { symbol: 'KOTAKBANK', name: 'Kotak Mahindra Bank Ltd.', sector: 'Banking', exchange: 'NSE' },
+  { symbol: 'LT', name: 'Larsen & Toubro Ltd.', sector: 'Infrastructure', exchange: 'NSE' },
+  { symbol: 'AXISBANK', name: 'Axis Bank Ltd.', sector: 'Banking', exchange: 'NSE' },
+  { symbol: 'HCLTECH', name: 'HCL Technologies Ltd.', sector: 'IT Services', exchange: 'NSE' },
+  { symbol: 'BAJFINANCE', name: 'Bajaj Finance Ltd.', sector: 'Financial Services', exchange: 'NSE' },
+  { symbol: 'MARUTI', name: 'Maruti Suzuki India Ltd.', sector: 'Automotive', exchange: 'NSE' },
+  { symbol: 'ASIANPAINT', name: 'Asian Paints Ltd.', sector: 'Consumer Goods', exchange: 'NSE' },
+  { symbol: 'SUNPHARMA', name: 'Sun Pharmaceutical Industries Ltd.', sector: 'Pharma', exchange: 'NSE' },
+  { symbol: 'TATAMOTORS', name: 'Tata Motors Ltd.', sector: 'Automotive', exchange: 'NSE' },
+  { symbol: 'POWERGRID', name: 'Power Grid Corporation of India Ltd.', sector: 'Power', exchange: 'NSE' },
+  { symbol: 'ADANIENT', name: 'Adani Enterprises Ltd.', sector: 'Conglomerate', exchange: 'NSE' },
+  { symbol: 'TITAN', name: 'Titan Company Ltd.', sector: 'Consumer Goods', exchange: 'NSE' },
+  { symbol: 'NIFTY', name: 'Nifty 50', sector: 'Index', exchange: 'NSE' },
+  { symbol: 'BANKNIFTY', name: 'Nifty Bank', sector: 'Index', exchange: 'NSE' },
 ];
 
 export function getCompanyName(symbol: string): string {
