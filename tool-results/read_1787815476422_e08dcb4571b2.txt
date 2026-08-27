@@ -1,0 +1,607 @@
+     1→'use client';
+     2→
+     3→import { useMemo, useState, useCallback, useEffect } from 'react';
+     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→import {
+     6→  PieChart,
+     7→  Pie,
+     8→  Cell,
+     9→  ResponsiveContainer,
+    10→  Tooltip,
+    11→} from 'recharts';
+    12→import {
+    13→  Briefcase,
+    14→  Plus,
+    15→  Trash2,
+    16→  DollarSign,
+    17→  TrendingUp,
+    18→  TrendingDown,
+    19→  Wallet,
+    20→  ArrowUpRight,
+    21→  ArrowDownRight,
+    22→  PieChart as PieChartIcon,
+    23→  BarChart3,
+    24→  Loader2,
+    25→  AlertCircle,
+    26→} from 'lucide-react';
+    27→import { KNOWN_SYMBOLS, formatPrice, formatPercent, formatNumber, getChangeColor, getCompanyName } from '@/lib/stock-utils';
+    28→import { SectionHeader } from '@/components/shared/animated-counter';
+    29→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+    30→import { Badge } from '@/components/ui/badge';
+    31→import { Button } from '@/components/ui/button';
+    32→import { Input } from '@/components/ui/input';
+    33→import { Label } from '@/components/ui/label';
+    34→import {
+    35→  Dialog,
+    36→  DialogContent,
+    37→  DialogHeader,
+    38→  DialogTitle,
+    39→  DialogTrigger,
+    40→  DialogFooter,
+    41→  DialogClose,
+    42→} from '@/components/ui/dialog';
+    43→import {
+    44→  Table,
+    45→  TableBody,
+    46→  TableCell,
+    47→  TableHead,
+    48→  TableHeader,
+    49→  TableRow,
+    50→} from '@/components/ui/table';
+    51→import { ScrollArea } from '@/components/ui/scroll-area';
+    52→import { toast } from 'sonner';
+    53→
+    54→// ─── Types ────────────────────────────────────────────────────────────────────
+    55→interface Holding {
+    56→  id: string;
+    57→  symbol: string;
+    58→  quantity: number;
+    59→  buyPrice: number;
+    60→}
+    61→
+    62→type SortKey = 'symbol' | 'quantity' | 'buyPrice' | 'currentPrice' | 'currentValue' | 'pl' | 'plPercent';
+    63→
+    64→// ─── Animation variants ───────────────────────────────────────────────────────
+    65→const containerVariants = {
+    66→  hidden: { opacity: 0 },
+    67→  show: {
+    68→    opacity: 1,
+    69→    transition: { staggerChildren: 0.06, delayChildren: 0.1 },
+    70→  },
+    71→};
+    72→
+    73→const itemVariants = {
+    74→  hidden: { opacity: 0, y: 20 },
+    75→  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
+    76→};
+    77→
+    78→// ─── Pre-populated holdings ───────────────────────────────────────────────────
+    79→const INITIAL_HOLDINGS: Holding[] = [
+    80→  { id: '1', symbol: 'AAPL', quantity: 50, buyPrice: 175.20 },
+    81→  { id: '2', symbol: 'NVDA', quantity: 100, buyPrice: 85.40 },
+    82→  { id: '3', symbol: 'MSFT', quantity: 25, buyPrice: 380.00 },
+    83→  { id: '4', symbol: 'GOOG', quantity: 40, buyPrice: 155.60 },
+    84→];
+    85→
+    86→// ─── Component ────────────────────────────────────────────────────────────────
+    87→export function PortfolioPage() {
+    88→  const [holdings, setHoldings] = useState<Holding[]>(INITIAL_HOLDINGS);
+    89→  const [dialogOpen, setDialogOpen] = useState(false);
+    90→  const [newSymbol, setNewSymbol] = useState('');
+    91→  const [newQuantity, setNewQuantity] = useState('');
+    92→  const [newBuyPrice, setNewBuyPrice] = useState('');
+    93→  const [sortKey, setSortKey] = useState<SortKey>('currentValue');
+    94→  const [sortAsc, setSortAsc] = useState(false);
+    95→  const [symbolSearch, setSymbolSearch] = useState('');
+    96→  const [pricesLoading, setPricesLoading] = useState(true);
+    97→  const [priceMap, setPriceMap] = useState<Record<string, number>>({});
+    98→
+    99→  // Fetch real prices for all holdings
+   100→  useEffect(() => {
+   101→    let cancelled = false;
+   102→
+   103→    async function fetchPrices() {
+   104→      if (holdings.length === 0) {
+   105→        if (!cancelled) setPricesLoading(false);
+   106→        return;
+   107→      }
+   108→      if (!cancelled) setPricesLoading(true);
+   109→      const newPriceMap: Record<string, number> = {};
+   110→      const promises = holdings.map(async (h) => {
+   111→        try {
+   112→          const res = await fetch(`/api/stock?symbol=${h.symbol}`);
+   113→          const data = await res.json();
+   114→          if (data.stock && data.stock.price > 0) {
+   115→            newPriceMap[h.symbol] = data.stock.price;
+   116→          } else {
+   117→            newPriceMap[h.symbol] = 0;
+   118→          }
+   119→        } catch {
+   120→          newPriceMap[h.symbol] = 0;
+   121→        }
+   122→      });
+   123→      await Promise.all(promises);
+   124→      if (!cancelled) {
+   125→        setPriceMap(newPriceMap);
+   126→        setPricesLoading(false);
+   127→      }
+   128→    }
+   129→
+   130→    fetchPrices();
+   131→    return () => { cancelled = true; };
+   132→  }, [holdings]);
+   133→
+   134→  // Computed portfolio metrics
+   135→  const portfolioData = useMemo(() => {
+   136→    return holdings.map((h) => {
+   137→      const known = KNOWN_SYMBOLS.find((s) => s.symbol === h.symbol);
+   138→      const currentPrice = priceMap[h.symbol] ?? 0;
+   139→      const buyValue = h.quantity * h.buyPrice;
+   140→      const currentValue = h.quantity * currentPrice;
+   141→      const pl = currentValue - buyValue;
+   142→      const plPercent = buyValue > 0 ? (pl / buyValue) * 100 : 0;
+   143→      return { ...h, currentPrice, buyValue, currentValue, pl, plPercent, name: known?.name || h.symbol };
+   144→    });
+   145→  }, [holdings, priceMap]);
+   146→
+   147→  const summary = useMemo(() => {
+   148→    const totalInvestment = portfolioData.reduce((s, h) => s + h.buyValue, 0);
+   149→    const currentValue = portfolioData.reduce((s, h) => s + h.currentValue, 0);
+   150→    const totalPL = currentValue - totalInvestment;
+   151→    const returnPct = totalInvestment > 0 ? (totalPL / totalInvestment) * 100 : 0;
+   152→    return { totalInvestment, currentValue, totalPL, returnPct };
+   153→  }, [portfolioData]);
+   154→
+   155→  const sortedData = useMemo(() => {
+   156→    const arr = [...portfolioData];
+   157→    arr.sort((a, b) => {
+   158→      const aVal = a[sortKey] as number;
+   159→      const bVal = b[sortKey] as number;
+   160→      return sortAsc ? aVal - bVal : bVal - aVal;
+   161→    });
+   162→    return arr;
+   163→  }, [portfolioData, sortKey, sortAsc]);
+   164→
+   165→  // Allocation pie data
+   166→  const allocationData = useMemo(() => {
+   167→    return portfolioData.map((h) => ({
+   168→      name: h.symbol,
+   169→      value: h.currentValue,
+   170→      color:
+   171→        h.symbol === 'AAPL' ? '#6366f1'
+   172→        : h.symbol === 'NVDA' ? '#06b6d4'
+   173→        : h.symbol === 'MSFT' ? '#8b5cf6'
+   174→        : h.symbol === 'GOOG' ? '#10b981'
+   175→        : h.symbol === 'TSLA' ? '#f59e0b'
+   176→        : h.symbol === 'META' ? '#ec4899'
+   177→        : '#64748b',
+   178→    }));
+   179→  }, [portfolioData]);
+   180→
+   181→  // Add stock
+   182→  const handleAdd = useCallback(() => {
+   183→    const sym = newSymbol.toUpperCase().trim();
+   184→    if (!KNOWN_SYMBOLS.find((s) => s.symbol === sym)) {
+   185→      toast.error('Unknown stock symbol — it will still be added');
+   186→    }
+   187→    const qty = parseFloat(newQuantity);
+   188→    const price = parseFloat(newBuyPrice);
+   189→    if (isNaN(qty) || qty <= 0) {
+   190→      toast.error('Enter a valid quantity');
+   191→      return;
+   192→    }
+   193→    if (isNaN(price) || price <= 0) {
+   194→      toast.error('Enter a valid buying price');
+   195→      return;
+   196→    }
+   197→    setHoldings((prev) => [
+   198→      ...prev,
+   199→      { id: Date.now().toString(), symbol: sym, quantity: qty, buyPrice: price },
+   200→    ]);
+   201→    setNewSymbol('');
+   202→    setNewQuantity('');
+   203→    setNewBuyPrice('');
+   204→    setDialogOpen(false);
+   205→    toast.success(`${sym} added to portfolio`);
+   206→  }, [newSymbol, newQuantity, newBuyPrice]);
+   207→
+   208→  // Remove stock
+   209→  const handleRemove = useCallback((id: string) => {
+   210→    setHoldings((prev) => prev.filter((h) => h.id !== id));
+   211→    toast.success('Holding removed');
+   212→  }, []);
+   213→
+   214→  // Sort handler
+   215→  const handleSort = useCallback(
+   216→    (key: SortKey) => {
+   217→      if (sortKey === key) {
+   218→        setSortAsc(!sortAsc);
+   219→      } else {
+   220→        setSortKey(key);
+   221→        setSortAsc(false);
+   222→      }
+   223→    },
+   224→    [sortKey, sortAsc]
+   225→  );
+   226→
+   227→  // Autocomplete
+   228→  const filteredSymbols = useMemo(() => {
+   229→    if (!symbolSearch) return [];
+   230→    return KNOWN_SYMBOLS
+   231→      .filter((s) => s.symbol.toLowerCase().includes(symbolSearch.toLowerCase()) || s.name.toLowerCase().includes(symbolSearch.toLowerCase()))
+   232→      .slice(0, 5);
+   233→  }, [symbolSearch]);
+   234→
+   235→  const sortIndicator = (field: SortKey) => (
+   236→    <span className="ml-1 text-[10px]">
+   237→      {sortKey === field ? (sortAsc ? '↑' : '↓') : '↕'}
+   238→    </span>
+   239→  );
+   240→
+   241→  return (
+   242→    <motion.div
+   243→      className="space-y-6"
+   244→      variants={containerVariants}
+   245→      initial="hidden"
+   246→      animate="show"
+   247→    >
+   248→      <SectionHeader
+   249→        title="Portfolio"
+   250→        subtitle="Track and manage your stock holdings"
+   251→        action={
+   252→          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+   253→            <DialogTrigger asChild>
+   254→              <Button className="gradient-button gap-2">
+   255→                <Plus className="w-4 h-4" />
+   256→                Add Stock
+   257→              </Button>
+   258→            </DialogTrigger>
+   259→            <DialogContent className="glass-card !bg-slate-900/95 border-white/10 sm:max-w-[420px]">
+   260→              <DialogHeader>
+   261→                <DialogTitle className="text-white flex items-center gap-2">
+   262→                  <Briefcase className="w-5 h-5 text-indigo-400" />
+   263→                  Add to Portfolio
+   264→                </DialogTitle>
+   265→              </DialogHeader>
+   266→              <div className="space-y-4 pt-2">
+   267→                {/* Symbol input with autocomplete */}
+   268→                <div className="space-y-2">
+   269→                  <Label className="text-slate-300 text-sm">Stock Symbol</Label>
+   270→                  <div className="relative">
+   271→                    <Input
+   272→                      value={newSymbol}
+   273→                      onChange={(e) => {
+   274→                        setNewSymbol(e.target.value);
+   275→                        setSymbolSearch(e.target.value);
+   276→                      }}
+   277→                      placeholder="e.g. AAPL"
+   278→                      className="bg-white/5 border-white/10 text-white placeholder:text-slate-500"
+   279→                    />
+   280→                    {filteredSymbols.length > 0 && (
+   281→                      <div className="absolute top-full left-0 right-0 mt-1 z-50 rounded-xl bg-slate-800/95 backdrop-blur-lg border border-white/10 shadow-xl overflow-hidden">
+   282→                        {filteredSymbols.map((s) => (
+   283→                          <button
+   284→                            key={s.symbol}
+   285→                            className="w-full px-3 py-2 text-left text-sm hover:bg-white/5 flex justify-between items-center transition-colors"
+   286→                            onClick={() => {
+   287→                              setNewSymbol(s.symbol);
+   288→                              setSymbolSearch('');
+   289→                            }}
+   290→                          >
+   291→                            <span className="text-white font-medium">{s.symbol}</span>
+   292→                            <span className="text-slate-400 text-xs">{s.name}</span>
+   293→                          </button>
+   294→                        ))}
+   295→                      </div>
+   296→                    )}
+   297→                  </div>
+   298→                </div>
+   299→                <div className="space-y-2">
+   300→                  <Label className="text-slate-300 text-sm">Quantity</Label>
+   301→                  <Input
+   302→                    type="number"
+   303→                    value={newQuantity}
+   304→                    onChange={(e) => setNewQuantity(e.target.value)}
+   305→                    placeholder="e.g. 50"
+   306→                    className="bg-white/5 border-white/10 text-white placeholder:text-slate-500"
+   307→                  />
+   308→                </div>
+   309→                <div className="space-y-2">
+   310→                  <Label className="text-slate-300 text-sm">Buying Price ($)</Label>
+   311→                  <Input
+   312→                    type="number"
+   313→                    value={newBuyPrice}
+   314→                    onChange={(e) => setNewBuyPrice(e.target.value)}
+   315→                    placeholder="e.g. 175.00"
+   316→                    className="bg-white/5 border-white/10 text-white placeholder:text-slate-500"
+   317→                  />
+   318→                </div>
+   319→              </div>
+   320→              <DialogFooter className="gap-2 pt-2">
+   321→                <DialogClose asChild>
+   322→                  <Button variant="outline" className="border-white/10 text-slate-300 hover:bg-white/5">
+   323→                    Cancel
+   324→                  </Button>
+   325→                </DialogClose>
+   326→                <Button onClick={handleAdd} className="gradient-button">
+   327→                  Add Holding
+   328→                </Button>
+   329→              </DialogFooter>
+   330→            </DialogContent>
+   331→          </Dialog>
+   332→        }
+   333→      />
+   334→
+   335→      {/* ── Summary Cards ─────────────────────────────────────────────────── */}
+   336→      <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+   337→        <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="glass-card p-4 glow-blue">
+   338→          <div className="flex items-center gap-2 mb-2">
+   339→            <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400">
+   340→              <DollarSign className="w-4 h-4" />
+   341→            </div>
+   342→            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Total Investment</span>
+   343→          </div>
+   344→          <p className="text-xl font-bold text-white">${formatNumber(summary.totalInvestment)}</p>
+   345→        </motion.div>
+   346→
+   347→        <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="glass-card p-4 glow-cyan">
+   348→          <div className="flex items-center gap-2 mb-2">
+   349→            <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400">
+   350→              <Wallet className="w-4 h-4" />
+   351→            </div>
+   352→            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Current Value</span>
+   353→          </div>
+   354→          {pricesLoading ? (
+   355→            <div className="flex items-center gap-2 text-slate-400">
+   356→              <Loader2 className="w-4 h-4 animate-spin" />
+   357→              <span className="text-sm">Loading...</span>
+   358→            </div>
+   359→          ) : (
+   360→            <p className="text-xl font-bold text-white">${formatNumber(summary.currentValue)}</p>
+   361→          )}
+   362→        </motion.div>
+   363→
+   364→        <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className={`glass-card p-4 ${summary.totalPL >= 0 ? 'glow-green' : 'glow-red'}`}>
+   365→          <div className="flex items-center gap-2 mb-2">
+   366→            <div className={`p-2 rounded-lg ${summary.totalPL >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+   367→              {summary.totalPL >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+   368→            </div>
+   369→            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Total P/L</span>
+   370→          </div>
+   371→          {pricesLoading ? (
+   372→            <div className="flex items-center gap-2 text-slate-400">
+   373→              <Loader2 className="w-4 h-4 animate-spin" />
+   374→              <span className="text-sm">Loading...</span>
+   375→            </div>
+   376→          ) : (
+   377→            <p className={`text-xl font-bold ${getChangeColor(summary.totalPL)}`}>
+   378→              {summary.totalPL >= 0 ? '+' : ''}${formatNumber(summary.totalPL)}
+   379→            </p>
+   380→          )}
+   381→        </motion.div>
+   382→
+   383→        <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} className={`glass-card p-4 ${summary.returnPct >= 0 ? 'glow-green' : 'glow-red'}`}>
+   384→          <div className="flex items-center gap-2 mb-2">
+   385→            <div className={`p-2 rounded-lg ${summary.returnPct >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+   386→              {summary.returnPct >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+   387→            </div>
+   388→            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">Portfolio Return</span>
+   389→          </div>
+   390→          {pricesLoading ? (
+   391→            <div className="flex items-center gap-2 text-slate-400">
+   392→              <Loader2 className="w-4 h-4 animate-spin" />
+   393→              <span className="text-sm">Loading...</span>
+   394→            </div>
+   395→          ) : (
+   396→            <p className={`text-xl font-bold ${getChangeColor(summary.returnPct)}`}>
+   397→              {formatPercent(summary.returnPct)}
+   398→            </p>
+   399→          )}
+   400→        </motion.div>
+   401→      </motion.div>
+   402→
+   403→      {/* ── Holdings Table + Allocation ────────────────────────────────────── */}
+   404→      <motion.div variants={itemVariants} className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+   405→        {/* Holdings Table */}
+   406→        <Card className="glass-card xl:col-span-2">
+   407→          <CardHeader>
+   408→            <CardTitle className="flex items-center gap-2 text-white text-base">
+   409→              <Briefcase className="w-5 h-5 text-indigo-400" />
+   410→              Holdings
+   411→              <Badge variant="outline" className="ml-2 border-white/10 text-slate-400 text-[10px]">
+   412→                {holdings.length} stocks
+   413→              </Badge>
+   414→              {pricesLoading && (
+   415→                <Loader2 className="w-3.5 h-3.5 text-slate-500 animate-spin ml-1" />
+   416→              )}
+   417→            </CardTitle>
+   418→          </CardHeader>
+   419→          <CardContent>
+   420→            <ScrollArea className="max-h-[420px]">
+   421→              <Table>
+   422→                <TableHeader>
+   423→                  <TableRow className="border-white/5 hover:bg-transparent">
+   424→                    <TableHead className="text-slate-400 font-medium text-xs cursor-pointer select-none" onClick={() => handleSort('symbol')}>
+   425→                      Symbol {sortIndicator('symbol')}
+   426→                    </TableHead>
+   427→                    <TableHead className="text-slate-400 font-medium text-xs hidden sm:table-cell">Name</TableHead>
+   428→                    <TableHead className="text-slate-400 font-medium text-xs text-right cursor-pointer select-none" onClick={() => handleSort('quantity')}>
+   429→                      Qty {sortIndicator('quantity')}
+   430→                    </TableHead>
+   431→                    <TableHead className="text-slate-400 font-medium text-xs text-right cursor-pointer select-none" onClick={() => handleSort('buyPrice')}>
+   432→                      Buy Price {sortIndicator('buyPrice')}
+   433→                    </TableHead>
+   434→                    <TableHead className="text-slate-400 font-medium text-xs text-right cursor-pointer select-none" onClick={() => handleSort('currentPrice')}>
+   435→                      Current {sortIndicator('currentPrice')}
+   436→                    </TableHead>
+   437→                    <TableHead className="text-slate-400 font-medium text-xs text-right cursor-pointer select-none hidden md:table-cell" onClick={() => handleSort('currentValue')}>
+   438→                      Value {sortIndicator('currentValue')}
+   439→                    </TableHead>
+   440→                    <TableHead className="text-slate-400 font-medium text-xs text-right cursor-pointer select-none" onClick={() => handleSort('pl')}>
+   441→                      P/L {sortIndicator('pl')}
+   442→                    </TableHead>
+   443→                    <TableHead className="text-slate-400 font-medium text-xs text-center">Actions</TableHead>
+   444→                  </TableRow>
+   445→                </TableHeader>
+   446→                <TableBody>
+   447→                  <AnimatePresence>
+   448→                    {sortedData.map((h) => (
+   449→                      <motion.tr
+   450→                        key={h.id}
+   451→                        layout
+   452→                        initial={{ opacity: 0 }}
+   453→                        animate={{ opacity: 1 }}
+   454→                        exit={{ opacity: 0, height: 0 }}
+   455→                        className="border-white/5 hover:bg-white/[0.03] transition-colors"
+   456→                      >
+   457→                        <TableCell className="text-sm font-semibold text-white">{h.symbol}</TableCell>
+   458→                        <TableCell className="text-sm text-slate-400 hidden sm:table-cell">{h.name}</TableCell>
+   459→                        <TableCell className="text-sm text-slate-300 text-right">{h.quantity}</TableCell>
+   460→                        <TableCell className="text-sm text-slate-300 text-right">${formatPrice(h.buyPrice)}</TableCell>
+   461→                        <TableCell className="text-sm text-white font-medium text-right">
+   462→                          {pricesLoading ? (
+   463→                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+   464→                          ) : h.currentPrice > 0 ? (
+   465→                            `$${formatPrice(h.currentPrice)}`
+   466→                          ) : (
+   467→                            <span className="text-slate-500 text-xs">—</span>
+   468→                          )}
+   469→                        </TableCell>
+   470→                        <TableCell className="text-sm text-slate-300 text-right hidden md:table-cell">
+   471→                          {pricesLoading ? (
+   472→                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+   473→                          ) : (
+   474→                            `$${formatNumber(h.currentValue)}`
+   475→                          )}
+   476→                        </TableCell>
+   477→                        <TableCell className="text-right">
+   478→                          {pricesLoading ? (
+   479→                            <Loader2 className="w-3 h-3 animate-spin text-slate-500 inline" />
+   480→                          ) : (
+   481→                            <div className="flex flex-col items-end">
+   482→                              <span className={`text-sm font-semibold ${getChangeColor(h.pl)}`}>
+   483→                                {h.pl >= 0 ? '+' : ''}${formatNumber(h.pl)}
+   484→                              </span>
+   485→                              <span className={`text-[11px] ${getChangeColor(h.plPercent)}`}>
+   486→                                {formatPercent(h.plPercent)}
+   487→                              </span>
+   488→                            </div>
+   489→                          )}
+   490→                        </TableCell>
+   491→                        <TableCell className="text-center">
+   492→                          <Button
+   493→                            variant="ghost"
+   494→                            size="sm"
+   495→                            className="h-7 w-7 p-0 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+   496→                            onClick={() => handleRemove(h.id)}
+   497→                          >
+   498→                            <Trash2 className="w-3.5 h-3.5" />
+   499→                          </Button>
+   500→                        </TableCell>
+   501→                      </motion.tr>
+   502→                    ))}
+   503→                  </AnimatePresence>
+   504→                </TableBody>
+   505→              </Table>
+   506→            </ScrollArea>
+   507→          </CardContent>
+   508→        </Card>
+   509→
+   510→        {/* Allocation Pie */}
+   511→        <Card className="glass-card">
+   512→          <CardHeader>
+   513→            <CardTitle className="flex items-center gap-2 text-white text-base">
+   514→              <PieChartIcon className="w-5 h-5 text-purple-400" />
+   515→              Allocation
+   516→            </CardTitle>
+   517→          </CardHeader>
+   518→          <CardContent>
+   519→            {pricesLoading ? (
+   520→              <div className="h-[220px] flex items-center justify-center">
+   521→                <div className="flex flex-col items-center gap-2 text-slate-400">
+   522→                  <Loader2 className="w-6 h-6 animate-spin" />
+   523→                  <span className="text-xs">Loading prices...</span>
+   524→                </div>
+   525→              </div>
+   526→            ) : summary.currentValue > 0 ? (
+   527→              <>
+   528→                <div className="h-[220px]">
+   529→                  <ResponsiveContainer width="100%" height="100%">
+   530→                    <PieChart>
+   531→                      <Pie
+   532→                        data={allocationData}
+   533→                        cx="50%"
+   534→                        cy="50%"
+   535→                        innerRadius={55}
+   536→                        outerRadius={85}
+   537→                        paddingAngle={3}
+   538→                        dataKey="value"
+   539→                        stroke="none"
+   540→                      >
+   541→                        {allocationData.map((entry, idx) => (
+   542→                          <Cell key={idx} fill={entry.color} />
+   543→                        ))}
+   544→                      </Pie>
+   545→                      <Tooltip
+   546→                        contentStyle={{
+   547→                          background: 'rgba(15,23,42,0.95)',
+   548→                          border: '1px solid rgba(99,102,241,0.2)',
+   549→                          borderRadius: '8px',
+   550→                          color: '#e2e8f0',
+   551→                          fontSize: '12px',
+   552→                        }}
+   553→                        formatter={(value: number) => [`$${formatNumber(value)}`, '']}
+   554→                      />
+   555→                    </PieChart>
+   556→                  </ResponsiveContainer>
+   557→                </div>
+   558→                <div className="space-y-2 mt-2">
+   559→                  {allocationData.map((d) => {
+   560→                    const pct = summary.currentValue > 0 ? ((d.value / summary.currentValue) * 100).toFixed(1) : '0';
+   561→                    return (
+   562→                      <div key={d.name} className="flex items-center justify-between text-xs">
+   563→                        <div className="flex items-center gap-2">
+   564→                          <span className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} />
+   565→                          <span className="text-slate-300 font-medium">{d.name}</span>
+   566→                        </div>
+   567→                        <span className="text-slate-400">{pct}%</span>
+   568→                      </div>
+   569→                    );
+   570→                  })}
+   571→                </div>
+   572→              </>
+   573→            ) : (
+   574→              <div className="h-[220px] flex items-center justify-center">
+   575→                <div className="flex flex-col items-center gap-2 text-slate-500">
+   576→                  <AlertCircle className="w-6 h-6" />
+   577→                  <span className="text-xs text-center">Unable to fetch current prices.<br/>Allocation chart requires live data.</span>
+   578→                </div>
+   579→              </div>
+   580→            )}
+   581→          </CardContent>
+   582→        </Card>
+   583→      </motion.div>
+   584→
+   585→      {/* ── Performance Chart ──────────────────────────────────────────────── */}
+   586→      <motion.div variants={itemVariants}>
+   587→        <Card className="glass-card">
+   588→          <CardHeader>
+   589→            <CardTitle className="flex items-center gap-2 text-white text-base">
+   590→              <BarChart3 className="w-5 h-5 text-cyan-400" />
+   591→              Portfolio Performance
+   592→            </CardTitle>
+   593→          </CardHeader>
+   594→          <CardContent>
+   595→            <div className="h-[250px] flex items-center justify-center">
+   596→              <div className="flex flex-col items-center gap-3 text-slate-500">
+   597→                <AlertCircle className="w-8 h-8 text-slate-600" />
+   598→                <p className="text-sm text-center">Requires historical data to display portfolio performance over time.</p>
+   599→                <p className="text-xs text-slate-600">Historical P/L tracking will be available once real-time price data is integrated with portfolio snapshots.</p>
+   600→              </div>
+   601→            </div>
+   602→          </CardContent>
+   603→        </Card>
+   604→      </motion.div>
+   605→    </motion.div>
+   606→  );
+   607→}

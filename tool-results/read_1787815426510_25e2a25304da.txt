@@ -1,0 +1,719 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useRef, useCallback } from 'react';
+     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→import {
+     6→  ComposedChart,
+     7→  Bar,
+     8→  BarChart,
+     9→  LineChart,
+    10→  Line,
+    11→  AreaChart,
+    12→  Area,
+    13→  XAxis,
+    14→  YAxis,
+    15→  Tooltip,
+    16→  ResponsiveContainer,
+    17→  ReferenceLine,
+    18→  ReferenceArea,
+    19→  CartesianGrid,
+    20→  Cell,
+    21→} from 'recharts';
+    22→import {
+    23→  Search,
+    24→  TrendingUp,
+    25→  TrendingDown,
+    26→  Activity,
+    27→  BarChart3,
+    28→  Volume2,
+    29→  DollarSign,
+    30→  Building2,
+    31→  Hash,
+    32→  ArrowUpRight,
+    33→  ArrowDownRight,
+    34→  Clock,
+    35→  X,
+    36→  Layers,
+    37→  Gauge,
+    38→  Percent,
+    39→  Target,
+    40→  History,
+    41→  RefreshCw,
+    42→} from 'lucide-react';
+    43→import { useAppStore } from '@/lib/store';
+    44→import {
+    45→  formatNumber,
+    46→  formatPrice,
+    47→  formatPercent,
+    48→  getChangeColor,
+    49→  type OHLCV,
+    50→  type StockInfo,
+    51→} from '@/lib/stock-utils';
+    52→import { SectionHeader, LoadingSpinner, EmptyState } from '@/components/shared/animated-counter';
+    53→import { Badge } from '@/components/ui/badge';
+    54→import { Input } from '@/components/ui/input';
+    55→import { Button } from '@/components/ui/button';
+    56→import { ScrollArea } from '@/components/ui/scroll-area';
+    57→import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+    58→import { Skeleton } from '@/components/ui/skeleton';
+    59→import { cn } from '@/lib/utils';
+    60→
+    61→// ─── Types ───────────────────────────────────────────────────────────
+    62→interface SearchResult {
+    63→  symbol: string;
+    64→  name: string;
+    65→  sector: string;
+    66→  exchange: string;
+    67→  price: number;
+    68→  change: number;
+    69→  changePercent: number;
+    70→  hasRealPrice: boolean;
+    71→}
+    72→
+    73→interface StockResponse {
+    74→  stock?: StockInfo;
+    75→  realQuote?: {
+    76→    price: number;
+    77→    change: number;
+    78→    changePercent: number;
+    79→    source: string;
+    80→    fetchedAt: string;
+    81→    dayHigh: number;
+    82→    dayLow: number;
+    83→    openPrice: number;
+    84→  };
+    85→  ohlcv?: OHLCV[];
+    86→  hasOHLCV?: boolean;
+    87→  indicators?: Record<string, number>;
+    88→  series?: Record<string, number[]>;
+    89→  error?: string;
+    90→  message?: string;
+    91→}
+    92→
+    93→// ─── Animation Variants ──────────────────────────────────────────────
+    94→const containerVariants = {
+    95→  hidden: { opacity: 0 },
+    96→  show: { opacity: 1, transition: { staggerChildren: 0.06, delayChildren: 0.1 } },
+    97→};
+    98→
+    99→const itemVariants = {
+   100→  hidden: { opacity: 0, y: 20 },
+   101→  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: 'easeOut' as const } },
+   102→};
+   103→
+   104→// ─── Chart Tooltip ───────────────────────────────────────────────────
+   105→function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string; color?: string }>; label?: string }) {
+   106→  if (!active || !payload?.length) return null;
+   107→  return (
+   108→    <div className="market-tooltip px-3 py-2 text-xs">
+   109→      <p className="text-slate-400 mb-1">{label}</p>
+   110→      {payload.map((entry, i) => (
+   111→        <p key={i} style={{ color: entry.color || '#fff' }} className="font-semibold">
+   112→          {entry.dataKey}: {typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}
+   113→        </p>
+   114→      ))}
+   115→    </div>
+   116→  );
+   117→}
+   118→
+   119→// ─── Timeframe config ────────────────────────────────────────────────
+   120→const TIMEFRAMES = [
+   121→  { label: '30D', days: 30 },
+   122→  { label: '60D', days: 60 },
+   123→  { label: '90D', days: 90 },
+   124→  { label: '180D', days: 180 },
+   125→] as const;
+   126→
+   127→// ─── Main LiveMarketPage ────────────────────────────────────────────
+   128→export function LiveMarketPage() {
+   129→  const { selectedStock, setSelectedStock } = useAppStore();
+   130→  const [searchQuery, setSearchQuery] = useState('');
+   131→  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+   132→  const [showSearch, setShowSearch] = useState(false);
+   133→  const [activeTab, setActiveTab] = useState('price');
+   134→  const [activeTimeframe, setActiveTimeframe] = useState(90);
+   135→  const [stockData, setStockData] = useState<StockResponse | null>(null);
+   136→  const [loading, setLoading] = useState(true);
+   137→  const [searchLoading, setSearchLoading] = useState(false);
+   138→  const searchRef = useRef<HTMLDivElement>(null);
+   139→  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   140→
+   141→  // Fetch stock data
+   142→  const fetchStockData = useCallback(async (symbol: string, days: number) => {
+   143→    setLoading(true);
+   144→    try {
+   145→      const res = await fetch(`/api/stock?symbol=${symbol}&days=${days}`);
+   146→      const data: StockResponse = await res.json();
+   147→      setStockData(data);
+   148→    } catch {
+   149→      setStockData(null);
+   150→    } finally {
+   151→      setLoading(false);
+   152→    }
+   153→  }, []);
+   154→
+   155→  // Initial fetch
+   156→  useEffect(() => {
+   157→    fetchStockData(selectedStock.symbol, activeTimeframe);
+   158→  }, [selectedStock.symbol, activeTimeframe, fetchStockData]);
+   159→
+   160→  // Search with debounce
+   161→  useEffect(() => {
+   162→    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+   163→    if (searchQuery.length < 1) {
+   164→      setSearchResults([]);
+   165→      return;
+   166→    }
+   167→    setSearchLoading(true);
+   168→    searchTimeoutRef.current = setTimeout(async () => {
+   169→      try {
+   170→        const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
+   171→        const data = await res.json();
+   172→        setSearchResults(data.results || []);
+   173→      } catch {
+   174→        setSearchResults([]);
+   175→      } finally {
+   176→        setSearchLoading(false);
+   177→      }
+   178→    }, 300);
+   179→    return () => {
+   180→      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+   181→    };
+   182→  }, [searchQuery]);
+   183→
+   184→  // Close search on outside click
+   185→  useEffect(() => {
+   186→    const handleClick = (e: MouseEvent) => {
+   187→      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+   188→        setShowSearch(false);
+   189→      }
+   190→    };
+   191→    document.addEventListener('mousedown', handleClick);
+   192→    return () => document.removeEventListener('mousedown', handleClick);
+   193→  }, []);
+   194→
+   195→  const handleSelectStock = (result: SearchResult) => {
+   196→    setSelectedStock({
+   197→      symbol: result.symbol,
+   198→      name: result.name,
+   199→      price: result.price || 0,
+   200→      change: result.change || 0,
+   201→      changePercent: result.changePercent || 0,
+   202→      volume: 0,
+   203→      marketCap: 0,
+   204→    });
+   205→    setShowSearch(false);
+   206→    setSearchQuery('');
+   207→    setSearchResults([]);
+   208→  };
+   209→
+   210→  // Prepare chart data
+   211→  const ohlcv = stockData?.ohlcv || [];
+   212→  const hasOHLCV = stockData?.hasOHLCV && ohlcv.length > 0;
+   213→
+   214→  const priceData = ohlcv.map((d) => ({
+   215→    date: d.date.slice(5),
+   216→    open: d.open,
+   217→    high: d.high,
+   218→    low: d.low,
+   219→    close: d.close,
+   220→    volume: d.volume,
+   221→  }));
+   222→
+   223→  // Volume chart data
+   224→  const volumeData = ohlcv.map((d) => ({
+   225→    date: d.date.slice(5),
+   226→    volume: d.volume,
+   227→    close: d.close,
+   228→    prevClose: d.open,
+   229→  }));
+   230→
+   231→  // Indicator chart data from API series
+   232→  const series = stockData?.series || null;
+   233→  const indicatorData = series
+   234→    ? ohlcv.map((d, i) => {
+   235→        const point: Record<string, string | number> = { date: d.date.slice(5), close: d.close };
+   236→        if (series.sma20?.[i] !== undefined && !isNaN(series.sma20[i])) point.sma20 = series.sma20[i];
+   237→        if (series.sma50?.[i] !== undefined && !isNaN(series.sma50[i])) point.sma50 = series.sma50[i];
+   238→        if (series.ema12?.[i] !== undefined && !isNaN(series.ema12[i])) point.ema12 = series.ema12[i];
+   239→        if (series.rsi?.[i] !== undefined && !isNaN(series.rsi[i])) point.rsi = series.rsi[i];
+   240→        if (series.bbUpper?.[i] !== undefined && !isNaN(series.bbUpper[i])) point.bbUpper = series.bbUpper[i];
+   241→        if (series.bbMiddle?.[i] !== undefined && !isNaN(series.bbMiddle[i])) point.bbMiddle = series.bbMiddle[i];
+   242→        if (series.bbLower?.[i] !== undefined && !isNaN(series.bbLower[i])) point.bbLower = series.bbLower[i];
+   243→        // MACD series may be shorter — align from end
+   244→        const macdLen = series.macd?.length || 0;
+   245→        const macdIdx = i - (ohlcv.length - macdLen);
+   246→        if (macdIdx >= 0 && series.macd?.[macdIdx] !== undefined && !isNaN(series.macd[macdIdx])) {
+   247→          point.macd = series.macd[macdIdx];
+   248→        }
+   249→        const sigLen = series.macdSignal?.length || 0;
+   250→        const sigIdx = i - (ohlcv.length - sigLen);
+   251→        if (sigIdx >= 0 && series.macdSignal?.[sigIdx] !== undefined && !isNaN(series.macdSignal[sigIdx])) {
+   252→          point.macdSignal = series.macdSignal[sigIdx];
+   253→        }
+   254→        const histLen = series.macdHistogram?.length || 0;
+   255→        const histIdx = i - (ohlcv.length - histLen);
+   256→        if (histIdx >= 0 && series.macdHistogram?.[histIdx] !== undefined && !isNaN(series.macdHistogram[histIdx])) {
+   257→          point.macdHistogram = series.macdHistogram[histIdx];
+   258→        }
+   259→        return point;
+   260→      })
+   261→    : [];
+   262→
+   263→  const indicators = stockData?.indicators || null;
+   264→
+   265→  return (
+   266→    <motion.div
+   267→      variants={containerVariants}
+   268→      initial="hidden"
+   269→      animate="show"
+   270→      className="space-y-6"
+   271→    >
+   272→      {/* ── Search Bar ────────────────────────────────────────── */}
+   273→      <motion.div variants={itemVariants} ref={searchRef} className="relative">
+   274→        <div className="relative">
+   275→          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+   276→          <Input
+   277→            value={searchQuery}
+   278→            onChange={(e) => {
+   279→              setSearchQuery(e.target.value);
+   280→              setShowSearch(true);
+   281→            }}
+   282→            onFocus={() => setShowSearch(true)}
+   283→            placeholder="Search stocks by name or symbol..."
+   284→            className="glass-card pl-11 pr-10 py-3 h-12 text-sm bg-transparent border-white/10 focus:border-indigo-500/50 rounded-xl"
+   285→          />
+   286→          {searchQuery && (
+   287→            <button
+   288→              onClick={() => { setSearchQuery(''); setSearchResults([]); }}
+   289→              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+   290→            >
+   291→              <X className="w-4 h-4" />
+   292→            </button>
+   293→          )}
+   294→        </div>
+   295→
+   296→        {/* Search Dropdown */}
+   297→        <AnimatePresence>
+   298→          {showSearch && searchQuery.length >= 1 && (
+   299→            <motion.div
+   300→              initial={{ opacity: 0, y: -4 }}
+   301→              animate={{ opacity: 1, y: 0 }}
+   302→              exit={{ opacity: 0, y: -4 }}
+   303→              transition={{ duration: 0.15 }}
+   304→              className="absolute top-full left-0 right-0 mt-2 glass-card p-2 z-50 max-h-72 overflow-y-auto"
+   305→            >
+   306→              {searchLoading ? (
+   307→                <div className="flex items-center justify-center py-6">
+   308→                  <LoadingSpinner size={24} label="Searching..." />
+   309→                </div>
+   310→              ) : searchResults.length === 0 ? (
+   311→                <div className="text-center py-6 text-slate-500 text-sm">No results found</div>
+   312→              ) : (
+   313→                searchResults.map((r) => (
+   314→                  <button
+   315→                    key={r.symbol}
+   316→                    onClick={() => handleSelectStock(r)}
+   317→                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors text-left"
+   318→                  >
+   319→                    <div>
+   320→                      <div className="flex items-center gap-2">
+   321→                        <span className="text-sm font-bold text-white">{r.symbol}</span>
+   322→                        <Badge variant="outline" className="text-[9px] border-white/10 text-slate-400 px-1.5 py-0">
+   323→                          {r.exchange}
+   324→                        </Badge>
+   325→                      </div>
+   326→                      <p className="text-xs text-slate-400 mt-0.5">{r.name}</p>
+   327→                    </div>
+   328→                    <div className="text-right">
+   329→                      {r.hasRealPrice ? (
+   330→                        <>
+   331→                          <p className="text-sm font-semibold text-white">${formatPrice(r.price)}</p>
+   332→                          <p className={cn('text-xs font-medium', getChangeColor(r.changePercent))}>
+   333→                            {formatPercent(r.changePercent)}
+   334→                          </p>
+   335→                        </>
+   336→                      ) : (
+   337→                        <p className="text-xs text-slate-500">No price</p>
+   338→                      )}
+   339→                    </div>
+   340→                  </button>
+   341→                ))
+   342→              )}
+   343→            </motion.div>
+   344→          )}
+   345→        </AnimatePresence>
+   346→      </motion.div>
+   347→
+   348→      {/* ── Main Content ───────────────────────────────────────── */}
+   349→      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+   350→        {/* Chart Area */}
+   351→        <motion.div variants={itemVariants} className="lg:col-span-3 space-y-4">
+   352→          {/* Header with timeframe selector */}
+   353→          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+   354→            <div>
+   355→              <div className="flex items-center gap-3">
+   356→                <h2 className="text-xl font-bold text-white">{selectedStock.symbol}</h2>
+   357→                {stockData?.stock?.name && (
+   358→                  <span className="text-sm text-slate-400">{stockData.stock.name}</span>
+   359→                )}
+   360→                {stockData?.realQuote && (
+   361→                  <Badge className="bg-emerald-500/15 text-emerald-400 text-[10px] font-semibold border-0">
+   362→                    LIVE
+   363→                  </Badge>
+   364→                )}
+   365→              </div>
+   366→              {stockData?.stock && (
+   367→                <div className="flex items-center gap-3 mt-1">
+   368→                  <span className="text-2xl font-bold text-white">${formatPrice(stockData.stock.price)}</span>
+   369→                  <span className={cn('text-sm font-semibold flex items-center gap-1', getChangeColor(stockData.stock.changePercent))}>
+   370→                    {stockData.stock.changePercent >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+   371→                    {formatPrice(stockData.stock.change)} ({formatPercent(stockData.stock.changePercent)})
+   372→                  </span>
+   373→                </div>
+   374→              )}
+   375→            </div>
+   376→            <div className="flex items-center gap-2">
+   377→              <div className="flex bg-white/5 rounded-xl p-1">
+   378→                {TIMEFRAMES.map((tf) => (
+   379→                  <button
+   380→                    key={tf.days}
+   381→                    onClick={() => setActiveTimeframe(tf.days)}
+   382→                    className={cn(
+   383→                      'px-3 py-1.5 text-xs font-medium rounded-lg transition-all',
+   384→                      activeTimeframe === tf.days
+   385→                        ? 'gradient-button text-white'
+   386→                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+   387→                    )}
+   388→                  >
+   389→                    {tf.label}
+   390→                  </button>
+   391→                ))}
+   392→              </div>
+   393→            </div>
+   394→          </div>
+   395→
+   396→          {/* Indicator Tabs + Chart */}
+   397→          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+   398→            <TabsList className="bg-white/5 rounded-xl p-1 h-9">
+   399→              <TabsTrigger value="price" className="text-xs data-[state=active]:gradient-button rounded-lg h-7">Price</TabsTrigger>
+   400→              <TabsTrigger value="sma" className="text-xs data-[state=active]:gradient-button rounded-lg h-7">SMA/EMA</TabsTrigger>
+   401→              <TabsTrigger value="rsi" className="text-xs data-[state=active]:gradient-button rounded-lg h-7">RSI</TabsTrigger>
+   402→              <TabsTrigger value="macd" className="text-xs data-[state=active]:gradient-button rounded-lg h-7">MACD</TabsTrigger>
+   403→              <TabsTrigger value="bb" className="text-xs data-[state=active]:gradient-button rounded-lg h-7">Bollinger</TabsTrigger>
+   404→            </TabsList>
+   405→
+   406→            <TabsContent value="price" className="mt-4">
+   407→              {loading ? (
+   408→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   409→                  <LoadingSpinner label="Loading price data..." />
+   410→                </div>
+   411→              ) : !hasOHLCV ? (
+   412→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   413→                  <EmptyState
+   414→                    icon={<Activity className="w-8 h-8" />}
+   415→                    title="No Live Data Available"
+   416→                    description={`No OHLCV data for ${selectedStock.symbol}. Try a different stock or refresh.`}
+   417→                    action={
+   418→                      <Button variant="outline" size="sm" onClick={() => fetchStockData(selectedStock.symbol, activeTimeframe)} className="gradient-button border-0">
+   419→                        <RefreshCw className="w-3.5 h-3.5 mr-2" />
+   420→                        Retry
+   421→                      </Button>
+   422→                    }
+   423→                  />
+   424→                </div>
+   425→              ) : (
+   426→                <>
+   427→                  <div className="glass-card p-4">
+   428→                    <ResponsiveContainer width="100%" height={300}>
+   429→                      <ComposedChart data={priceData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   430→                        <defs>
+   431→                          <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+   432→                            <stop offset="0%" stopColor="#6366f1" stopOpacity={0.15} />
+   433→                            <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+   434→                          </linearGradient>
+   435→                        </defs>
+   436→                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   437→                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   438→                        <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   439→                        <Tooltip content={<ChartTooltip />} />
+   440→                        <Area type="monotone" dataKey="close" stroke="#6366f1" strokeWidth={2} fill="url(#areaGrad)" dot={false} />
+   441→                        <Line type="monotone" dataKey="high" stroke="#10b981" strokeWidth={0.5} dot={false} strokeDasharray="2 2" />
+   442→                        <Line type="monotone" dataKey="low" stroke="#ef4444" strokeWidth={0.5} dot={false} strokeDasharray="2 2" />
+   443→                      </ComposedChart>
+   444→                    </ResponsiveContainer>
+   445→                  </div>
+   446→                  {/* Volume bars */}
+   447→                  <div className="glass-card p-4 mt-2">
+   448→                    <div className="flex items-center gap-2 mb-2">
+   449→                      <Volume2 className="w-3.5 h-3.5 text-slate-500" />
+   450→                      <span className="text-xs text-slate-500 uppercase tracking-wider font-medium">Volume</span>
+   451→                    </div>
+   452→                    <ResponsiveContainer width="100%" height={80}>
+   453→                      <BarChart data={volumeData} margin={{ top: 0, right: 5, left: -20, bottom: 0 }}>
+   454→                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={false} />
+   455→                        <YAxis axisLine={false} tickLine={false} tick={false} />
+   456→                        <Tooltip content={<ChartTooltip />} />
+   457→                        <Bar dataKey="volume" radius={[2, 2, 0, 0]}>
+   458→                          {volumeData.map((entry, index) => (
+   459→                            <Cell
+   460→                              key={index}
+   461→                              fill={entry.close >= entry.prevClose ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}
+   462→                            />
+   463→                          ))}
+   464→                        </Bar>
+   465→                      </BarChart>
+   466→                    </ResponsiveContainer>
+   467→                  </div>
+   468→                </>
+   469→              )}
+   470→            </TabsContent>
+   471→
+   472→            <TabsContent value="sma" className="mt-4">
+   473→              {loading || !hasOHLCV || !series ? (
+   474→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   475→                  {!hasOHLCV ? (
+   476→                    <EmptyState icon={<Layers className="w-8 h-8" />} title="No Live Data Available" description="No OHLCV data to compute indicators" />
+   477→                  ) : (
+   478→                    <LoadingSpinner label="Loading indicators..." />
+   479→                  )}
+   480→                </div>
+   481→              ) : (
+   482→                <div className="glass-card p-4">
+   483→                  <div className="flex items-center gap-4 mb-3">
+   484→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-indigo-400" /><span className="text-[10px] text-slate-400">SMA 20</span></div>
+   485→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-cyan-400" /><span className="text-[10px] text-slate-400">SMA 50</span></div>
+   486→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-amber-400" /><span className="text-[10px] text-slate-400">EMA 12</span></div>
+   487→                  </div>
+   488→                  <ResponsiveContainer width="100%" height={350}>
+   489→                    <LineChart data={indicatorData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   490→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   491→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   492→                      <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   493→                      <Tooltip content={<ChartTooltip />} />
+   494→                      <Line type="monotone" dataKey="close" stroke="#ffffff" strokeWidth={1.5} dot={false} opacity={0.5} />
+   495→                      <Line type="monotone" dataKey="sma20" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls />
+   496→                      <Line type="monotone" dataKey="sma50" stroke="#22d3ee" strokeWidth={2} dot={false} connectNulls />
+   497→                      <Line type="monotone" dataKey="ema12" stroke="#fbbf24" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls />
+   498→                    </LineChart>
+   499→                  </ResponsiveContainer>
+   500→                </div>
+   501→              )}
+   502→            </TabsContent>
+   503→
+   504→            <TabsContent value="rsi" className="mt-4">
+   505→              {loading || !hasOHLCV || !series ? (
+   506→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   507→                  {!hasOHLCV ? (
+   508→                    <EmptyState icon={<Gauge className="w-8 h-8" />} title="No Live Data Available" description="No OHLCV data to compute RSI" />
+   509→                  ) : (
+   510→                    <LoadingSpinner label="Loading RSI..." />
+   511→                  )}
+   512→                </div>
+   513→              ) : (
+   514→                <div className="glass-card p-4">
+   515→                  <div className="flex items-center justify-between mb-3">
+   516→                    <div className="flex items-center gap-4">
+   517→                      <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-violet-400" /><span className="text-[10px] text-slate-400">RSI (14)</span></div>
+   518→                    </div>
+   519→                    {indicators?.rsi !== undefined && !isNaN(indicators.rsi) && (
+   520→                      <Badge variant="outline" className={cn('text-xs border-0', indicators.rsi > 70 ? 'bg-red-500/15 text-red-400' : indicators.rsi < 30 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400')}>
+   521→                        {indicators.rsi.toFixed(1)}
+   522→                      </Badge>
+   523→                    )}
+   524→                  </div>
+   525→                  <ResponsiveContainer width="100%" height={350}>
+   526→                    <LineChart data={indicatorData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   527→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   528→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   529→                      <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   530→                      <Tooltip content={<ChartTooltip />} />
+   531→                      <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.5} />
+   532→                      <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.5} />
+   533→                      <ReferenceArea y1={30} y2={70} fill="rgba(148,163,184,0.03)" />
+   534→                      <Line type="monotone" dataKey="rsi" stroke="#a78bfa" strokeWidth={2} dot={false} connectNulls />
+   535→                    </LineChart>
+   536→                  </ResponsiveContainer>
+   537→                </div>
+   538→              )}
+   539→            </TabsContent>
+   540→
+   541→            <TabsContent value="macd" className="mt-4">
+   542→              {loading || !hasOHLCV || !series ? (
+   543→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   544→                  {!hasOHLCV ? (
+   545→                    <EmptyState icon={<Activity className="w-8 h-8" />} title="No Live Data Available" description="No OHLCV data to compute MACD" />
+   546→                  ) : (
+   547→                    <LoadingSpinner label="Loading MACD..." />
+   548→                  )}
+   549→                </div>
+   550→              ) : (
+   551→                <div className="glass-card p-4">
+   552→                  <div className="flex items-center gap-4 mb-3">
+   553→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-indigo-400" /><span className="text-[10px] text-slate-400">MACD</span></div>
+   554→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-orange-400" /><span className="text-[10px] text-slate-400">Signal</span></div>
+   555→                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-emerald-400/40 rounded-sm" /><span className="text-[10px] text-slate-400">Histogram</span></div>
+   556→                  </div>
+   557→                  <ResponsiveContainer width="100%" height={350}>
+   558→                    <ComposedChart data={indicatorData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   559→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   560→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   561→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   562→                      <Tooltip content={<ChartTooltip />} />
+   563→                      <ReferenceLine y={0} stroke="rgba(148,163,184,0.2)" />
+   564→                      <Bar dataKey="macdHistogram" radius={[2, 2, 0, 0]}>
+   565→                        {indicatorData.map((entry, index) => (
+   566→                          <Cell
+   567→                            key={index}
+   568→                            fill={typeof entry.macdHistogram === 'number' && entry.macdHistogram >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)'}
+   569→                          />
+   570→                        ))}
+   571→                      </Bar>
+   572→                      <Line type="monotone" dataKey="macd" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls />
+   573→                      <Line type="monotone" dataKey="macdSignal" stroke="#fb923c" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls />
+   574→                    </ComposedChart>
+   575→                  </ResponsiveContainer>
+   576→                </div>
+   577→              )}
+   578→            </TabsContent>
+   579→
+   580→            <TabsContent value="bb" className="mt-4">
+   581→              {loading || !hasOHLCV || !series ? (
+   582→                <div className="glass-card p-4 h-96 flex items-center justify-center">
+   583→                  {!hasOHLCV ? (
+   584→                    <EmptyState icon={<Layers className="w-8 h-8" />} title="No Live Data Available" description="No OHLCV data to compute Bollinger Bands" />
+   585→                  ) : (
+   586→                    <LoadingSpinner label="Loading Bollinger Bands..." />
+   587→                  )}
+   588→                </div>
+   589→              ) : (
+   590→                <div className="glass-card p-4">
+   591→                  <div className="flex items-center gap-4 mb-3">
+   592→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-indigo-400" /><span className="text-[10px] text-slate-400">Upper</span></div>
+   593→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-cyan-400" /><span className="text-[10px] text-slate-400">Middle (SMA 20)</span></div>
+   594→                    <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-indigo-400" /><span className="text-[10px] text-slate-400">Lower</span></div>
+   595→                  </div>
+   596→                  <ResponsiveContainer width="100%" height={350}>
+   597→                    <LineChart data={indicatorData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   598→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   599→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   600→                      <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   601→                      <Tooltip content={<ChartTooltip />} />
+   602→                      <Area type="monotone" dataKey="bbUpper" stroke="#818cf8" strokeWidth={1} fill="rgba(99,102,241,0.05)" dot={false} connectNulls />
+   603→                      <Line type="monotone" dataKey="bbMiddle" stroke="#22d3ee" strokeWidth={1.5} dot={false} connectNulls />
+   604→                      <Area type="monotone" dataKey="bbLower" stroke="#818cf8" strokeWidth={1} fill="rgba(99,102,241,0.05)" dot={false} connectNulls />
+   605→                      <Line type="monotone" dataKey="close" stroke="#ffffff" strokeWidth={1.5} dot={false} opacity={0.8} />
+   606→                    </LineChart>
+   607→                  </ResponsiveContainer>
+   608→                </div>
+   609→              )}
+   610→            </TabsContent>
+   611→          </Tabs>
+   612→        </motion.div>
+   613→
+   614→        {/* ── Sidebar ────────────────────────────────────────────── */}
+   615→        <motion.div variants={itemVariants} className="space-y-4">
+   616→          {/* Stock Info Card */}
+   617→          <div className="glass-card p-5">
+   618→            <SectionHeader title="Stock Info" subtitle={selectedStock.symbol} />
+   619→            {loading ? (
+   620→              <div className="space-y-3 mt-2">
+   621→                {Array.from({ length: 6 }).map((_, i) => (
+   622→                  <Skeleton key={i} className="h-5 w-full bg-white/5" />
+   623→                ))}
+   624→              </div>
+   625→            ) : stockData?.error ? (
+   626→              <EmptyState
+   627→                icon={<Activity className="w-6 h-6" />}
+   628→                title="No Live Data"
+   629→                description={stockData.message || 'Could not fetch stock data'}
+   630→                action={
+   631→                  <Button variant="outline" size="sm" onClick={() => fetchStockData(selectedStock.symbol, activeTimeframe)} className="gradient-button border-0 mt-2">
+   632→                    <RefreshCw className="w-3 h-3 mr-1.5" />
+   633→                    Retry
+   634→                  </Button>
+   635→                }
+   636→              />
+   637→            ) : stockData?.stock ? (
+   638→              <ScrollArea className="max-h-96">
+   639→                <div className="space-y-3 mt-2">
+   640→                  {[
+   641→                    { label: 'Name', value: stockData.stock.name, icon: Building2 },
+   642→                    { label: 'Price', value: `$${formatPrice(stockData.stock.price)}`, icon: DollarSign },
+   643→                    { label: 'Change', value: `${formatPrice(stockData.stock.change)} (${formatPercent(stockData.stock.changePercent)})`, icon: stockData.stock.changePercent >= 0 ? ArrowUpRight : ArrowDownRight, color: getChangeColor(stockData.stock.changePercent) },
+   644→                    { label: 'Volume', value: formatNumber(stockData.stock.volume), icon: BarChart3 },
+   645→                    { label: 'Market Cap', value: stockData.stock.marketCap > 0 ? formatNumber(stockData.stock.marketCap) : 'N/A', icon: Building2 },
+   646→                    { label: 'Day Range', value: stockData.stock.dayRange || 'N/A', icon: Target },
+   647→                    { label: '52W High', value: stockData.stock.high52w > 0 ? `$${formatPrice(stockData.stock.high52w)}` : 'N/A', icon: TrendingUp },
+   648→                    { label: '52W Low', value: stockData.stock.low52w > 0 ? `$${formatPrice(stockData.stock.low52w)}` : 'N/A', icon: TrendingDown },
+   649→                    { label: 'P/E Ratio', value: stockData.stock.pe > 0 ? stockData.stock.pe.toFixed(2) : 'N/A', icon: Percent },
+   650→                    { label: 'Sector', value: stockData.stock.sector || 'N/A', icon: Layers },
+   651→                  ].map((item) => (
+   652→                    <div key={item.label} className="flex items-center justify-between py-1.5">
+   653→                      <div className="flex items-center gap-2 text-slate-400">
+   654→                        <item.icon className="w-3.5 h-3.5" />
+   655→                        <span className="text-xs">{item.label}</span>
+   656→                      </div>
+   657→                      <span className={cn('text-xs font-medium text-white', item.color)}>
+   658→                        {item.value}
+   659→                      </span>
+   660→                    </div>
+   661→                  ))}
+   662→                </div>
+   663→              </ScrollArea>
+   664→            ) : null}
+   665→          </div>
+   666→
+   667→          {/* Key Indicators Quick View */}
+   668→          {indicators && !stockData?.error && (
+   669→            <div className="glass-card p-5">
+   670→              <SectionHeader title="Key Indicators" subtitle="Latest values" />
+   671→              <div className="space-y-3 mt-2">
+   672→                {[
+   673→                  { label: 'RSI (14)', value: indicators.rsi, format: (v: number) => v.toFixed(1), signal: indicators.rsi > 70 ? 'Overbought' : indicators.rsi < 30 ? 'Oversold' : 'Neutral' },
+   674→                  { label: 'MACD', value: indicators.macd, format: (v: number) => v.toFixed(3), signal: (indicators.macdSignal !== undefined && indicators.macd > indicators.macdSignal) ? 'Bullish' : 'Bearish' },
+   675→                  { label: 'SMA 20', value: indicators.sma20, format: (v: number) => `$${v.toFixed(2)}` },
+   676→                  { label: 'ATR (14)', value: indicators.atr, format: (v: number) => v.toFixed(3) },
+   677→                ].map((ind) => {
+   678→                  if (ind.value === undefined || isNaN(ind.value)) return null;
+   679→                  return (
+   680→                    <div key={ind.label} className="flex items-center justify-between py-1.5">
+   681→                      <span className="text-xs text-slate-400">{ind.label}</span>
+   682→                      <div className="flex items-center gap-2">
+   683→                        <span className="text-xs font-medium text-white">{ind.format(ind.value)}</span>
+   684→                        {ind.signal && (
+   685→                          <Badge variant="outline" className={cn(
+   686→                            'text-[9px] border-0 px-1.5 py-0',
+   687→                            ind.signal === 'Bullish' || ind.signal === 'Oversold' ? 'bg-emerald-500/15 text-emerald-400' :
+   688→                            ind.signal === 'Bearish' || ind.signal === 'Overbought' ? 'bg-red-500/15 text-red-400' :
+   689→                            'bg-amber-500/15 text-amber-400'
+   690→                          )}>
+   691→                            {ind.signal}
+   692→                          </Badge>
+   693→                        )}
+   694→                      </div>
+   695→                    </div>
+   696→                  );
+   697→                })}
+   698→              </div>
+   699→            </div>
+   700→          )}
+   701→
+   702→          {/* Data Source Info */}
+   703→          <div className="glass-card p-4">
+   704→            <div className="flex items-center gap-2 text-xs text-slate-500">
+   705→              <Clock className="w-3.5 h-3.5" />
+   706→              <span>{stockData?.realQuote ? `Updated: ${new Date(stockData.realQuote.fetchedAt).toLocaleTimeString()}` : 'No recent data'}</span>
+   707→            </div>
+   708→            {stockData?.realQuote?.source && (
+   709→              <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+   710→                <History className="w-3.5 h-3.5" />
+   711→                <span>Source: {stockData.realQuote.source}</span>
+   712→              </div>
+   713→            )}
+   714→          </div>
+   715→        </motion.div>
+   716→      </div>
+   717→    </motion.div>
+   718→  );
+   719→}

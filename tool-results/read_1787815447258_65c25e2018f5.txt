@@ -1,0 +1,678 @@
+     1→'use client';
+     2→
+     3→import { useState, useEffect, useCallback } from 'react';
+     4→import { motion } from 'framer-motion';
+     5→import {
+     6→  LineChart,
+     7→  Line,
+     8→  AreaChart,
+     9→  Area,
+    10→  BarChart,
+    11→  Bar,
+    12→  XAxis,
+    13→  YAxis,
+    14→  Tooltip,
+    15→  ResponsiveContainer,
+    16→  ReferenceLine,
+    17→  ReferenceArea,
+    18→  CartesianGrid,
+    19→  Cell,
+    20→} from 'recharts';
+    21→import {
+    22→  Activity,
+    23→  TrendingUp,
+    24→  TrendingDown,
+    25→  BarChart3,
+    26→  Waves,
+    27→  Zap,
+    28→  Target,
+    29→  ArrowUpRight,
+    30→  ArrowDownRight,
+    31→  Minus,
+    32→  Volume2,
+    33→  Layers,
+    34→  Cpu,
+    35→  RefreshCw,
+    36→} from 'lucide-react';
+    37→import { useAppStore } from '@/lib/store';
+    38→import {
+    39→  formatNumber,
+    40→  formatPrice,
+    41→  getChangeColor,
+    42→  type OHLCV,
+    43→} from '@/lib/stock-utils';
+    44→import { CircularProgress } from '@/components/shared/gauge-chart';
+    45→import { AnimatedCounter, SectionHeader, EmptyState, LoadingSpinner } from '@/components/shared/animated-counter';
+    46→import { Badge } from '@/components/ui/badge';
+    47→import { Button } from '@/components/ui/button';
+    48→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    49→import { Skeleton } from '@/components/ui/skeleton';
+    50→import { cn } from '@/lib/utils';
+    51→
+    52→// ─── Types ───────────────────────────────────────────────────────────
+    53→interface StockResponse {
+    54→  stock?: {
+    55→    symbol: string;
+    56→    name: string;
+    57→    price: number;
+    58→    change: number;
+    59→    changePercent: number;
+    60→  };
+    61→  ohlcv?: OHLCV[];
+    62→  hasOHLCV?: boolean;
+    63→  indicators?: Record<string, number>;
+    64→  series?: Record<string, number[]>;
+    65→  error?: string;
+    66→  message?: string;
+    67→}
+    68→
+    69→interface IndicatorCardData {
+    70→  label: string;
+    71→  value: string;
+    72→  raw: number;
+    73→  signal: 'bullish' | 'bearish' | 'neutral';
+    74→  description: string;
+    75→  icon: typeof Activity;
+    76→}
+    77→
+    78→// ─── Animation Variants ──────────────────────────────────────────────
+    79→const containerVariants = {
+    80→  hidden: { opacity: 0 },
+    81→  show: { opacity: 1, transition: { staggerChildren: 0.04, delayChildren: 0.08 } },
+    82→};
+    83→
+    84→const itemVariants = {
+    85→  hidden: { opacity: 0, y: 16 },
+    86→  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' as const } },
+    87→};
+    88→
+    89→// ─── Chart Tooltip ───────────────────────────────────────────────────
+    90→function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; dataKey: string; color?: string }>; label?: string }) {
+    91→  if (!active || !payload?.length) return null;
+    92→  return (
+    93→    <div className="market-tooltip px-3 py-2 text-xs">
+    94→      <p className="text-slate-400 mb-1">{label}</p>
+    95→      {payload.map((entry, i) => (
+    96→        <p key={i} style={{ color: entry.color || '#fff' }} className="font-semibold">
+    97→          {entry.dataKey}: {typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}
+    98→        </p>
+    99→      ))}
+   100→    </div>
+   101→  );
+   102→}
+   103→
+   104→// ─── Derive indicator cards from API data ────────────────────────────
+   105→function deriveIndicatorCards(ind: Record<string, number> | undefined, price: number): IndicatorCardData[] {
+   106→  if (!ind) return [];
+   107→  const cards: IndicatorCardData[] = [];
+   108→
+   109→  const rsi = ind.rsi;
+   110→  if (rsi !== undefined && !isNaN(rsi)) {
+   111→    cards.push({
+   112→      label: 'RSI (14)',
+   113→      value: rsi.toFixed(1),
+   114→      raw: rsi,
+   115→      signal: rsi > 70 ? 'bearish' : rsi < 30 ? 'bullish' : 'neutral',
+   116→      description: rsi > 70 ? 'Overbought territory' : rsi < 30 ? 'Oversold territory' : 'Neutral zone',
+   117→      icon: Activity,
+   118→    });
+   119→  }
+   120→
+   121→  const macd = ind.macd;
+   122→  const macdSignal = ind.macdSignal;
+   123→  const macdHist = ind.macdHistogram;
+   124→  if (macd !== undefined && !isNaN(macd)) {
+   125→    const signal = macdHist !== undefined && !isNaN(macdHist)
+   126→      ? (macdHist > 0 ? 'bullish' : macdHist < 0 ? 'bearish' : 'neutral')
+   127→      : 'neutral';
+   128→    cards.push({
+   129→      label: 'MACD',
+   130→      value: macd.toFixed(3),
+   131→      raw: macd,
+   132→      signal,
+   133→      description: macdSignal !== undefined ? `Signal: ${macdSignal.toFixed(3)}` : 'No signal line',
+   134→      icon: Waves,
+   135→    });
+   136→  }
+   137→
+   138→  const sma20 = ind.sma20;
+   139→  if (sma20 !== undefined && !isNaN(sma20)) {
+   140→    cards.push({
+   141→      label: 'SMA 20',
+   142→      value: `$${sma20.toFixed(2)}`,
+   143→      raw: price > 0 ? ((price - sma20) / sma20) * 100 : 0,
+   144→      signal: price > sma20 ? 'bullish' : price < sma20 ? 'bearish' : 'neutral',
+   145→      description: price > sma20 ? 'Price above SMA' : 'Price below SMA',
+   146→      icon: TrendingUp,
+   147→    });
+   148→  }
+   149→
+   150→  const ema12 = ind.ema12;
+   151→  if (ema12 !== undefined && !isNaN(ema12)) {
+   152→    cards.push({
+   153→      label: 'EMA 12',
+   154→      value: `$${ema12.toFixed(2)}`,
+   155→      raw: price > 0 ? ((price - ema12) / ema12) * 100 : 0,
+   156→      signal: price > ema12 ? 'bullish' : price < ema12 ? 'bearish' : 'neutral',
+   157→      description: 'Short-term exponential MA',
+   158→      icon: Zap,
+   159→    });
+   160→  }
+   161→
+   162→  const bbUpper = ind.bbUpper;
+   163→  const bbLower = ind.bbLower;
+   164→  const bbMiddle = ind.bbMiddle;
+   165→  if (bbUpper !== undefined && !isNaN(bbUpper) && bbLower !== undefined && !isNaN(bbLower)) {
+   166→    const bbWidth = ((bbUpper - bbLower) / bbMiddle) * 100;
+   167→    cards.push({
+   168→      label: 'Bollinger Bands',
+   169→      value: `${bbWidth.toFixed(1)}% width`,
+   170→      raw: bbWidth,
+   171→      signal: price >= bbUpper ? 'bearish' : price <= bbLower ? 'bullish' : 'neutral',
+   172→      description: price >= bbUpper ? 'At upper band' : price <= bbLower ? 'At lower band' : 'Within bands',
+   173→      icon: Layers,
+   174→    });
+   175→  }
+   176→
+   177→  const atr = ind.atr;
+   178→  if (atr !== undefined && !isNaN(atr)) {
+   179→    cards.push({
+   180→      label: 'ATR (14)',
+   181→      value: atr.toFixed(3),
+   182→      raw: atr,
+   183→      signal: 'neutral',
+   184→      description: 'Average True Range',
+   185→      icon: Target,
+   186→    });
+   187→  }
+   188→
+   189→  const vwap = ind.vwap;
+   190→  if (vwap !== undefined && !isNaN(vwap)) {
+   191→    cards.push({
+   192→      label: 'VWAP',
+   193→      value: `$${vwap.toFixed(2)}`,
+   194→      raw: price > 0 ? ((price - vwap) / vwap) * 100 : 0,
+   195→      signal: price > vwap ? 'bullish' : price < vwap ? 'bearish' : 'neutral',
+   196→      description: price > vwap ? 'Above VWAP (bullish)' : 'Below VWAP (bearish)',
+   197→      icon: BarChart3,
+   198→    });
+   199→  }
+   200→
+   201→  const stochK = ind.stochK;
+   202→  const stochD = ind.stochD;
+   203→  if (stochK !== undefined && !isNaN(stochK)) {
+   204→    cards.push({
+   205→      label: 'Stochastic RSI',
+   206→      value: `K:${stochK.toFixed(1)} D:${stochD !== undefined && !isNaN(stochD) ? stochD.toFixed(1) : 'N/A'}`,
+   207→      raw: stochK,
+   208→      signal: stochK > 80 ? 'bearish' : stochK < 20 ? 'bullish' : 'neutral',
+   209→      description: stochK > 80 ? 'Overbought' : stochK < 20 ? 'Oversold' : 'Neutral',
+   210→      icon: Cpu,
+   211→    });
+   212→  }
+   213→
+   214→  const adx = ind.adx;
+   215→  if (adx !== undefined && !isNaN(adx)) {
+   216→    cards.push({
+   217→      label: 'ADX (14)',
+   218→      value: adx.toFixed(1),
+   219→      raw: adx,
+   220→      signal: adx > 25 ? 'bullish' : adx < 20 ? 'neutral' : 'neutral',
+   221→      description: adx > 50 ? 'Strong trend' : adx > 25 ? 'Trending' : 'Weak trend / ranging',
+   222→      icon: TrendingUp,
+   223→    });
+   224→  }
+   225→
+   226→  const cci = ind.cci;
+   227→  if (cci !== undefined && !isNaN(cci)) {
+   228→    cards.push({
+   229→      label: 'CCI (20)',
+   230→      value: cci.toFixed(1),
+   231→      raw: cci,
+   232→      signal: cci > 100 ? 'bearish' : cci < -100 ? 'bullish' : 'neutral',
+   233→      description: cci > 100 ? 'Overbought' : cci < -100 ? 'Oversold' : 'Normal',
+   234→      icon: Activity,
+   235→    });
+   236→  }
+   237→
+   238→  const obv = ind.obv;
+   239→  if (obv !== undefined && !isNaN(obv)) {
+   240→    cards.push({
+   241→      label: 'OBV',
+   242→      value: formatNumber(obv),
+   243→      raw: 0,
+   244→      signal: 'neutral',
+   245→      description: 'On-Balance Volume',
+   246→      icon: Volume2,
+   247→    });
+   248→  }
+   249→
+   250→  return cards;
+   251→}
+   252→
+   253→// ─── Signal Summary Logic ────────────────────────────────────────────
+   254→function getSignalSummary(cards: IndicatorCardData[]) {
+   255→  let bullish = 0;
+   256→  let bearish = 0;
+   257→  let neutral = 0;
+   258→  cards.forEach((c) => {
+   259→    if (c.signal === 'bullish') bullish++;
+   260→    else if (c.signal === 'bearish') bearish++;
+   261→    else neutral++;
+   262→  });
+   263→  const total = bullish + bearish + neutral;
+   264→  if (total === 0) return { label: 'No Data', bullish: 0, bearish: 0, neutral: 0, score: 0, color: '#64748b' };
+   265→  const score = ((bullish - bearish) / total) * 100;
+   266→  let label: string;
+   267→  let color: string;
+   268→  if (score > 25) { label = 'Strongly Bullish'; color = '#10b981'; }
+   269→  else if (score > 10) { label = 'Bullish'; color = '#22c55e'; }
+   270→  else if (score < -25) { label = 'Strongly Bearish'; color = '#ef4444'; }
+   271→  else if (score < -10) { label = 'Bearish'; color = '#f97316'; }
+   272→  else { label = 'Neutral'; color = '#eab308'; }
+   273→  return { label, bullish, bearish, neutral, score, color };
+   274→}
+   275→
+   276→// ─── Signal Badge Component ──────────────────────────────────────────
+   277→function SignalBadge({ signal }: { signal: 'bullish' | 'bearish' | 'neutral' }) {
+   278→  if (signal === 'bullish') return <Badge className="bg-emerald-500/15 text-emerald-400 text-[10px] border-0">BULLISH</Badge>;
+   279→  if (signal === 'bearish') return <Badge className="bg-red-500/15 text-red-400 text-[10px] border-0">BEARISH</Badge>;
+   280→  return <Badge className="bg-amber-500/15 text-amber-400 text-[10px] border-0">NEUTRAL</Badge>;
+   281→}
+   282→
+   283→// ─── Main TechnicalAnalysisPage ─────────────────────────────────────
+   284→export function TechnicalAnalysisPage() {
+   285→  const { selectedStock } = useAppStore();
+   286→  const [stockData, setStockData] = useState<StockResponse | null>(null);
+   287→  const [loading, setLoading] = useState(true);
+   288→  const [activeChart, setActiveChart] = useState('rsi');
+   289→
+   290→  const fetchData = useCallback(async () => {
+   291→    setLoading(true);
+   292→    try {
+   293→      const res = await fetch(`/api/stock?symbol=${selectedStock.symbol}&days=90`);
+   294→      const data: StockResponse = await res.json();
+   295→      setStockData(data);
+   296→    } catch {
+   297→      setStockData(null);
+   298→    } finally {
+   299→      setLoading(false);
+   300→    }
+   301→  }, [selectedStock.symbol]);
+   302→
+   303→  useEffect(() => {
+   304→    fetchData();
+   305→  }, [fetchData]);
+   306→
+   307→  const ohlcv = stockData?.ohlcv || [];
+   308→  const hasOHLCV = stockData?.hasOHLCV && ohlcv.length > 0;
+   309→  const indicators = stockData?.indicators;
+   310→  const series = stockData?.series;
+   311→  const price = stockData?.stock?.price || 0;
+   312→
+   313→  const indicatorCards = deriveIndicatorCards(indicators, price);
+   314→  const signalSummary = getSignalSummary(indicatorCards);
+   315→
+   316→  // Build chart data arrays aligned with OHLCV dates
+   317→  const buildChartData = (keys: string[]) => {
+   318→    if (!series || !hasOHLCV) return [];
+   319→    return ohlcv.map((d, i) => {
+   320→      const point: Record<string, string | number> = { date: d.date.slice(5) };
+   321→      for (const key of keys) {
+   322→        const arr = series[key];
+   323→        if (!arr) continue;
+   324→        // Series may be shorter (e.g. MACD) — align from end
+   325→        const offset = ohlcv.length - arr.length;
+   326→        const idx = i - offset;
+   327→        if (idx >= 0 && idx < arr.length && !isNaN(arr[idx])) {
+   328→          point[key] = arr[idx];
+   329→        }
+   330→      }
+   331→      return point;
+   332→    });
+   333→  };
+   334→
+   335→  const rsiData = buildChartData(['rsi']);
+   336→  const macdData = buildChartData(['macd', 'macdSignal', 'macdHistogram']);
+   337→  const smaData = buildChartData(['sma20', 'sma50', 'ema12', 'close']);
+   338→  const bbData = buildChartData(['bbUpper', 'bbMiddle', 'bbLower', 'close']);
+   339→  const atrData = buildChartData(['atr']);
+   340→  const vwapData = buildChartData(['vwap', 'close']);
+   341→  const stochData = buildChartData(['stochK', 'stochD']);
+   342→  const adxData = buildChartData(['adx', 'adxPlusDI', 'adxMinusDI']);
+   343→  const cciData = buildChartData(['cci']);
+   344→  const obvData = buildChartData(['obv']);
+   345→
+   346→  return (
+   347→    <motion.div
+   348→      variants={containerVariants}
+   349→      initial="hidden"
+   350→      animate="show"
+   351→      className="space-y-6"
+   352→    >
+   353→      {/* ── Header ──────────────────────────────────────────────── */}
+   354→      <motion.div variants={itemVariants}>
+   355→        <SectionHeader
+   356→          title="Technical Analysis"
+   357→          subtitle={`${selectedStock.symbol} — 90 Day Indicators`}
+   358→          badge={hasOHLCV ? { label: 'LIVE DATA', color: 'bg-emerald-500/15 text-emerald-400' } : undefined}
+   359→          action={
+   360→            <Button variant="outline" size="sm" onClick={fetchData} className="gradient-button border-0">
+   361→              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+   362→              Refresh
+   363→            </Button>
+   364→          }
+   365→        />
+   366→      </motion.div>
+   367→
+   368→      {/* ── Signal Summary Bar ───────────────────────────────────── */}
+   369→      {loading ? (
+   370→        <motion.div variants={itemVariants} className="glass-card p-5">
+   371→          <Skeleton className="h-16 w-full bg-white/5 rounded-xl" />
+   372→        </motion.div>
+   373→      ) : !hasOHLCV || indicatorCards.length === 0 ? (
+   374→        <motion.div variants={itemVariants} className="glass-card p-8">
+   375→          <EmptyState
+   376→            icon={<Activity className="w-10 h-10" />}
+   377→            title="No Live Data Available"
+   378→            description={`No OHLCV data for ${selectedStock.symbol} to compute technical indicators. The data source may be temporarily unavailable.`}
+   379→            action={
+   380→              <Button variant="outline" size="sm" onClick={fetchData} className="gradient-button border-0">
+   381→                <RefreshCw className="w-3.5 h-3.5 mr-2" />
+   382→                Retry
+   383→              </Button>
+   384→            }
+   385→          />
+   386→        </motion.div>
+   387→      ) : (
+   388→        <>
+   389→          <motion.div variants={itemVariants} className="glass-card p-5">
+   390→            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+   391→              <div className="flex items-center gap-4">
+   392→                <CircularProgress
+   393→                  value={Math.max(0, Math.min(100, 50 + signalSummary.score / 2))}
+   394→                  label="Signal Score"
+   395→                  size={80}
+   396→                  strokeWidth={6}
+   397→                  color={signalSummary.color}
+   398→                />
+   399→                <div>
+   400→                  <div className="text-lg font-bold" style={{ color: signalSummary.color }}>
+   401→                    {signalSummary.label}
+   402→                  </div>
+   403→                  <div className="text-xs text-slate-400 mt-0.5">
+   404→                    {indicatorCards.length} indicators analyzed
+   405→                  </div>
+   406→                </div>
+   407→              </div>
+   408→              <div className="flex items-center gap-6">
+   409→                <div className="text-center">
+   410→                  <div className="flex items-center gap-1.5 justify-center">
+   411→                    <ArrowUpRight className="w-4 h-4 text-emerald-400" />
+   412→                    <span className="text-lg font-bold text-emerald-400">{signalSummary.bullish}</span>
+   413→                  </div>
+   414→                  <span className="text-[10px] text-slate-500 uppercase tracking-wider">Bullish</span>
+   415→                </div>
+   416→                <div className="text-center">
+   417→                  <div className="flex items-center gap-1.5 justify-center">
+   418→                    <Minus className="w-4 h-4 text-amber-400" />
+   419→                    <span className="text-lg font-bold text-amber-400">{signalSummary.neutral}</span>
+   420→                  </div>
+   421→                  <span className="text-[10px] text-slate-500 uppercase tracking-wider">Neutral</span>
+   422→                </div>
+   423→                <div className="text-center">
+   424→                  <div className="flex items-center gap-1.5 justify-center">
+   425→                    <ArrowDownRight className="w-4 h-4 text-red-400" />
+   426→                    <span className="text-lg font-bold text-red-400">{signalSummary.bearish}</span>
+   427→                  </div>
+   428→                  <span className="text-[10px] text-slate-500 uppercase tracking-wider">Bearish</span>
+   429→                </div>
+   430→              </div>
+   431→            </div>
+   432→          </motion.div>
+   433→
+   434→          {/* ── Indicator Summary Cards ───────────────────────────── */}
+   435→          <motion.div variants={itemVariants} className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+   436→            {indicatorCards.map((card, i) => (
+   437→              <motion.div
+   438→                key={card.label}
+   439→                initial={{ opacity: 0, y: 12 }}
+   440→                animate={{ opacity: 1, y: 0 }}
+   441→                transition={{ delay: 0.05 * i, duration: 0.35 }}
+   442→                className={cn(
+   443→                  'glass-card p-4 cursor-default',
+   444→                  card.signal === 'bullish' ? 'glow-green' : card.signal === 'bearish' ? 'glow-red' : 'glow-blue'
+   445→                )}
+   446→              >
+   447→                <div className="flex items-center justify-between mb-2">
+   448→                  <card.icon className={cn(
+   449→                    'w-4 h-4',
+   450→                    card.signal === 'bullish' ? 'text-emerald-400' : card.signal === 'bearish' ? 'text-red-400' : 'text-cyan-400'
+   451→                  )} />
+   452→                  <SignalBadge signal={card.signal} />
+   453→                </div>
+   454→                <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">{card.label}</p>
+   455→                <p className="text-sm font-bold text-white">{card.value}</p>
+   456→                <p className="text-[10px] text-slate-500 mt-1">{card.description}</p>
+   457→              </motion.div>
+   458→            ))}
+   459→          </motion.div>
+   460→
+   461→          {/* ── Full-Size Indicator Charts ────────────────────────── */}
+   462→          <motion.div variants={itemVariants} className="glass-card p-5">
+   463→            <Tabs value={activeChart} onValueChange={setActiveChart} className="w-full">
+   464→              <TabsList className="bg-white/5 rounded-xl p-1 h-9 flex-wrap">
+   465→                {['rsi', 'macd', 'sma', 'bb', 'atr', 'vwap', 'stoch', 'adx', 'cci', 'obv'].map((key) => (
+   466→                  <TabsTrigger key={key} value={key} className="text-[10px] data-[state=active]:gradient-button rounded-lg h-7 px-2.5">
+   467→                    {key === 'stoch' ? 'StochRSI' : key.toUpperCase()}
+   468→                  </TabsTrigger>
+   469→                ))}
+   470→              </TabsList>
+   471→
+   472→              {/* RSI Chart */}
+   473→              <TabsContent value="rsi" className="mt-4">
+   474→                <div className="h-72">
+   475→                  <ResponsiveContainer width="100%" height="100%">
+   476→                    <LineChart data={rsiData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   477→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   478→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   479→                      <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   480→                      <Tooltip content={<ChartTooltip />} />
+   481→                      <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.5} label={{ value: '70', fill: '#ef4444', fontSize: 9 }} />
+   482→                      <ReferenceLine y={30} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.5} label={{ value: '30', fill: '#10b981', fontSize: 9 }} />
+   483→                      <ReferenceArea y1={30} y2={70} fill="rgba(148,163,184,0.03)" />
+   484→                      <Line type="monotone" dataKey="rsi" stroke="#a78bfa" strokeWidth={2} dot={false} connectNulls />
+   485→                    </LineChart>
+   486→                  </ResponsiveContainer>
+   487→                </div>
+   488→              </TabsContent>
+   489→
+   490→              {/* MACD Chart */}
+   491→              <TabsContent value="macd" className="mt-4">
+   492→                <div className="h-72">
+   493→                  <ResponsiveContainer width="100%" height="100%">
+   494→                    <BarChart data={macdData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   495→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   496→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   497→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   498→                      <Tooltip content={<ChartTooltip />} />
+   499→                      <ReferenceLine y={0} stroke="rgba(148,163,184,0.2)" />
+   500→                      <Bar dataKey="macdHistogram" radius={[2, 2, 0, 0]}>
+   501→                        {macdData.map((entry, i) => (
+   502→                          <Cell key={i} fill={typeof entry.macdHistogram === 'number' && entry.macdHistogram >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)'} />
+   503→                        ))}
+   504→                      </Bar>
+   505→                    </BarChart>
+   506→                  </ResponsiveContainer>
+   507→                </div>
+   508→                <div className="h-48 mt-2">
+   509→                  <ResponsiveContainer width="100%" height="100%">
+   510→                    <LineChart data={macdData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   511→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   512→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   513→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   514→                      <Tooltip content={<ChartTooltip />} />
+   515→                      <ReferenceLine y={0} stroke="rgba(148,163,184,0.2)" />
+   516→                      <Line type="monotone" dataKey="macd" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls name="MACD" />
+   517→                      <Line type="monotone" dataKey="macdSignal" stroke="#fb923c" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls name="Signal" />
+   518→                    </LineChart>
+   519→                  </ResponsiveContainer>
+   520→                </div>
+   521→              </TabsContent>
+   522→
+   523→              {/* SMA/EMA Chart */}
+   524→              <TabsContent value="sma" className="mt-4">
+   525→                <div className="h-80">
+   526→                  <ResponsiveContainer width="100%" height="100%">
+   527→                    <LineChart data={smaData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   528→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   529→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   530→                      <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   531→                      <Tooltip content={<ChartTooltip />} />
+   532→                      <Line type="monotone" dataKey="close" stroke="#ffffff" strokeWidth={1.5} dot={false} opacity={0.4} name="Price" />
+   533→                      <Line type="monotone" dataKey="sma20" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls name="SMA 20" />
+   534→                      <Line type="monotone" dataKey="sma50" stroke="#22d3ee" strokeWidth={2} dot={false} connectNulls name="SMA 50" />
+   535→                      <Line type="monotone" dataKey="ema12" stroke="#fbbf24" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls name="EMA 12" />
+   536→                    </LineChart>
+   537→                  </ResponsiveContainer>
+   538→                </div>
+   539→              </TabsContent>
+   540→
+   541→              {/* Bollinger Bands Chart */}
+   542→              <TabsContent value="bb" className="mt-4">
+   543→                <div className="h-80">
+   544→                  <ResponsiveContainer width="100%" height="100%">
+   545→                    <LineChart data={bbData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   546→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   547→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   548→                      <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   549→                      <Tooltip content={<ChartTooltip />} />
+   550→                      <Area type="monotone" dataKey="bbUpper" stroke="#818cf8" strokeWidth={1} fill="rgba(99,102,241,0.08)" dot={false} connectNulls name="Upper" />
+   551→                      <Line type="monotone" dataKey="bbMiddle" stroke="#22d3ee" strokeWidth={1.5} dot={false} connectNulls name="Middle" />
+   552→                      <Area type="monotone" dataKey="bbLower" stroke="#818cf8" strokeWidth={1} fill="rgba(99,102,241,0.08)" dot={false} connectNulls name="Lower" />
+   553→                      <Line type="monotone" dataKey="close" stroke="#ffffff" strokeWidth={1.5} dot={false} opacity={0.8} name="Price" />
+   554→                    </LineChart>
+   555→                  </ResponsiveContainer>
+   556→                </div>
+   557→              </TabsContent>
+   558→
+   559→              {/* ATR Chart */}
+   560→              <TabsContent value="atr" className="mt-4">
+   561→                <div className="h-72">
+   562→                  <ResponsiveContainer width="100%" height="100%">
+   563→                    <AreaChart data={atrData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   564→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   565→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   566→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   567→                      <Tooltip content={<ChartTooltip />} />
+   568→                      <defs>
+   569→                        <linearGradient id="atrGrad" x1="0" y1="0" x2="0" y2="1">
+   570→                          <stop offset="0%" stopColor="#f97316" stopOpacity={0.2} />
+   571→                          <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
+   572→                        </linearGradient>
+   573→                      </defs>
+   574→                      <Area type="monotone" dataKey="atr" stroke="#f97316" strokeWidth={2} fill="url(#atrGrad)" dot={false} connectNulls name="ATR" />
+   575→                    </AreaChart>
+   576→                  </ResponsiveContainer>
+   577→                </div>
+   578→              </TabsContent>
+   579→
+   580→              {/* VWAP Chart */}
+   581→              <TabsContent value="vwap" className="mt-4">
+   582→                <div className="h-80">
+   583→                  <ResponsiveContainer width="100%" height="100%">
+   584→                    <LineChart data={vwapData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   585→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   586→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   587→                      <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => `$${v.toFixed(0)}`} />
+   588→                      <Tooltip content={<ChartTooltip />} />
+   589→                      <Line type="monotone" dataKey="close" stroke="#ffffff" strokeWidth={1.5} dot={false} opacity={0.5} name="Price" />
+   590→                      <Line type="monotone" dataKey="vwap" stroke="#06b6d4" strokeWidth={2} dot={false} connectNulls name="VWAP" />
+   591→                    </LineChart>
+   592→                  </ResponsiveContainer>
+   593→                </div>
+   594→              </TabsContent>
+   595→
+   596→              {/* Stochastic RSI Chart */}
+   597→              <TabsContent value="stoch" className="mt-4">
+   598→                <div className="h-72">
+   599→                  <ResponsiveContainer width="100%" height="100%">
+   600→                    <LineChart data={stochData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   601→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   602→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   603→                      <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   604→                      <Tooltip content={<ChartTooltip />} />
+   605→                      <ReferenceLine y={80} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.5} />
+   606→                      <ReferenceLine y={20} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.5} />
+   607→                      <ReferenceArea y1={20} y2={80} fill="rgba(148,163,184,0.03)" />
+   608→                      <Line type="monotone" dataKey="stochK" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls name="%K" />
+   609→                      <Line type="monotone" dataKey="stochD" stroke="#fb923c" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls name="%D" />
+   610→                    </LineChart>
+   611→                  </ResponsiveContainer>
+   612→                </div>
+   613→              </TabsContent>
+   614→
+   615→              {/* ADX Chart */}
+   616→              <TabsContent value="adx" className="mt-4">
+   617→                <div className="h-72">
+   618→                  <ResponsiveContainer width="100%" height="100%">
+   619→                    <LineChart data={adxData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   620→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   621→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   622→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   623→                      <Tooltip content={<ChartTooltip />} />
+   624→                      <ReferenceLine y={25} stroke="#f59e0b" strokeDasharray="3 3" strokeOpacity={0.5} label={{ value: '25', fill: '#f59e0b', fontSize: 9 }} />
+   625→                      <Line type="monotone" dataKey="adx" stroke="#a78bfa" strokeWidth={2} dot={false} connectNulls name="ADX" />
+   626→                      <Line type="monotone" dataKey="adxPlusDI" stroke="#10b981" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls name="+DI" />
+   627→                      <Line type="monotone" dataKey="adxMinusDI" stroke="#ef4444" strokeWidth={1.5} dot={false} strokeDasharray="4 2" connectNulls name="-DI" />
+   628→                    </LineChart>
+   629→                  </ResponsiveContainer>
+   630→                </div>
+   631→              </TabsContent>
+   632→
+   633→              {/* CCI Chart */}
+   634→              <TabsContent value="cci" className="mt-4">
+   635→                <div className="h-72">
+   636→                  <ResponsiveContainer width="100%" height="100%">
+   637→                    <LineChart data={cciData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   638→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   639→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   640→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   641→                      <Tooltip content={<ChartTooltip />} />
+   642→                      <ReferenceLine y={100} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.5} />
+   643→                      <ReferenceLine y={-100} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.5} />
+   644→                      <ReferenceLine y={0} stroke="rgba(148,163,184,0.2)" />
+   645→                      <ReferenceArea y1={-100} y2={100} fill="rgba(148,163,184,0.03)" />
+   646→                      <Line type="monotone" dataKey="cci" stroke="#22d3ee" strokeWidth={2} dot={false} connectNulls name="CCI" />
+   647→                    </LineChart>
+   648→                  </ResponsiveContainer>
+   649→                </div>
+   650→              </TabsContent>
+   651→
+   652→              {/* OBV Chart */}
+   653→              <TabsContent value="obv" className="mt-4">
+   654→                <div className="h-72">
+   655→                  <ResponsiveContainer width="100%" height="100%">
+   656→                    <AreaChart data={obvData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   657→                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.06)" />
+   658→                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} />
+   659→                      <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={(v: number) => formatNumber(v)} />
+   660→                      <Tooltip content={<ChartTooltip />} />
+   661→                      <defs>
+   662→                        <linearGradient id="obvGrad" x1="0" y1="0" x2="0" y2="1">
+   663→                          <stop offset="0%" stopColor="#6366f1" stopOpacity={0.2} />
+   664→                          <stop offset="100%" stopColor="#6366f1" stopOpacity={0} />
+   665→                        </linearGradient>
+   666→                      </defs>
+   667→                      <Area type="monotone" dataKey="obv" stroke="#818cf8" strokeWidth={2} fill="url(#obvGrad)" dot={false} connectNulls name="OBV" />
+   668→                    </AreaChart>
+   669→                  </ResponsiveContainer>
+   670→                </div>
+   671→              </TabsContent>
+   672→            </Tabs>
+   673→          </motion.div>
+   674→        </>
+   675→      )}
+   676→    </motion.div>
+   677→  );
+   678→}
