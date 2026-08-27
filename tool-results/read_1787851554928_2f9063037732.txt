@@ -1,0 +1,802 @@
+     1→// MarketLens Price Streamer
+     2→// Connects to Upstox V3 Market Data Feed (WebSocket, protobuf binary)
+     3→// and broadcasts normalized live ticks to frontend clients via Socket.IO.
+     4→//
+     5→// Architecture:
+     6→//   Upstox WS (wss://api.upstox.com/v3/feed/market-data-feed)
+     7→//     → protobuf decode → normalize → validate → Socket.IO broadcast
+     8→//     → frontend clients (Zustand store)
+     9→//
+    10→// Security: UPSTOX_ANALYTICS_TOKEN is NEVER sent to clients.
+    11→
+    12→import { Server } from 'socket.io';
+    13→import { createServer } from 'http';
+    14→import { readFileSync } from 'fs';
+    15→import { join, resolve } from 'path';
+    16→import { WebSocket as WsLib } from 'ws';
+    17→import protobuf from 'protobufjs';
+    18→
+    19→// ── Configuration ──────────────────────────────────────────────────
+    20→
+    21→const PORT = 3003;
+    22→const UPSTOX_WS_URL = 'wss://api.upstox.com/v3/feed/market-data-feed';
+    23→const RECONNECT_BASE_DELAY_MS = 1000;
+    24→const RECONNECT_MAX_DELAY_MS = 30000;
+    25→const MAX_RECONNECT_ATTEMPTS = 50;
+    26→const STALE_THRESHOLD_MS = 60_000;
+    27→const HEARTBEAT_INTERVAL_MS = 15_000;
+    28→
+    29→const INITIAL_SYMBOLS = ['RELIANCE', 'TCS', 'NIFTY', 'BANKNIFTY'];
+    30→
+    31→// ── Symbol Mapping ──────────────────────────────────────────────────
+    32→
+    33→interface SymbolEntry {
+    34→  symbol: string;
+    35→  name: string;
+    36→  exchange: string;
+    37→  instrumentKey: string;
+    38→}
+    39→
+    40→const SYMBOL_MAP: Record<string, SymbolEntry> = {
+    41→  RELIANCE: { symbol: 'RELIANCE', name: 'Reliance Industries Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE002A01018' },
+    42→  TCS: { symbol: 'TCS', name: 'Tata Consultancy Services Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE467B01029' },
+    43→  INFY: { symbol: 'INFY', name: 'Infosys Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE009A01021' },
+    44→  HDFCBANK: { symbol: 'HDFCBANK', name: 'HDFC Bank Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE040A01034' },
+    45→  ICICIBANK: { symbol: 'ICICIBANK', name: 'ICICI Bank Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE090A01021' },
+    46→  SBIN: { symbol: 'SBIN', name: 'State Bank of India', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE062A01020' },
+    47→  WIPRO: { symbol: 'WIPRO', name: 'Wipro Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE075A01022' },
+    48→  ITC: { symbol: 'ITC', name: 'ITC Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE154A01025' },
+    49→  BHARTIARTL: { symbol: 'BHARTIARTL', name: 'Bharti Airtel Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE397D01024' },
+    50→  HINDUNILVR: { symbol: 'HINDUNILVR', name: 'Hindustan Unilever Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE030A01027' },
+    51→  KOTAKBANK: { symbol: 'KOTAKBANK', name: 'Kotak Mahindra Bank Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE237A01028' },
+    52→  LT: { symbol: 'LT', name: 'Larsen & Toubro Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE018A01030' },
+    53→  AXISBANK: { symbol: 'AXISBANK', name: 'Axis Bank Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE238A01034' },
+    54→  HCLTECH: { symbol: 'HCLTECH', name: 'HCL Technologies Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE860A01027' },
+    55→  BAJFINANCE: { symbol: 'BAJFINANCE', name: 'Bajaj Finance Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE296A01024' },
+    56→  MARUTI: { symbol: 'MARUTI', name: 'Maruti Suzuki India Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE585B01010' },
+    57→  ASIANPAINT: { symbol: 'ASIANPAINT', name: 'Asian Paints Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE021A01026' },
+    58→  SUNPHARMA: { symbol: 'SUNPHARMA', name: 'Sun Pharmaceutical Industries Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE044A01036' },
+    59→  TATAMOTORS: { symbol: 'TATAMOTORS', name: 'Tata Motors Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE155A01022' },
+    60→  POWERGRID: { symbol: 'POWERGRID', name: 'Power Grid Corporation of India Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE752E01010' },
+    61→  ADANIENT: { symbol: 'ADANIENT', name: 'Adani Enterprises Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE423A01024' },
+    62→  TITAN: { symbol: 'TITAN', name: 'Titan Company Ltd.', exchange: 'NSE', instrumentKey: 'NSE_EQ|INE280A01028' },
+    63→  NIFTY: { symbol: 'NIFTY', name: 'Nifty 50', exchange: 'NSE', instrumentKey: 'NSE_INDEX|Nifty 50' },
+    64→  BANKNIFTY: { symbol: 'BANKNIFTY', name: 'Nifty Bank', exchange: 'NSE', instrumentKey: 'NSE_INDEX|Nifty Bank' },
+    65→};
+    66→
+    67→// ── Types ───────────────────────────────────────────────────────────
+    68→
+    69→type ConnectionStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'ERROR';
+    70→type DataStatus = 'LIVE' | 'CONNECTING' | 'UNAVAILABLE';
+    71→
+    72→interface NormalizedTick {
+    73→  symbol: string;
+    74→  exchange: string;
+    75→  price: number;
+    76→  change: number;
+    77→  changePercent: number;
+    78→  volume: number;
+    79→  timestamp: string;
+    80→  source: 'upstox';
+    81→  dataStatus: DataStatus;
+    82→  ltp?: number;
+    83→  open?: number;
+    84→  high?: number;
+    85→  low?: number;
+    86→  close?: number;
+    87→  previousClose?: number;
+    88→  marketStatus?: string;
+    89→}
+    90→
+    91→interface ConnectionInfo {
+    92→  status: ConnectionStatus;
+    93→  upstoxStatus: ConnectionStatus;
+    94→  subscribedSymbols: string[];
+    95→  staleSymbols: string[];
+    96→  connectedClients: number;
+    97→  lastUpstoxConnect?: string;
+    98→  reconnectAttempt?: number;
+    99→}
+   100→
+   101→// Market status enum from protobuf
+   102→const MARKET_STATUS_MAP: Record<number, string> = {
+   103→  0: 'PRE_OPEN_START',
+   104→  1: 'PRE_OPEN_END',
+   105→  2: 'NORMAL_OPEN',
+   106→  3: 'NORMAL_CLOSE',
+   107→  4: 'CLOSING_START',
+   108→  5: 'CLOSING_END',
+   109→};
+   110→
+   111→// ── Token Loading ───────────────────────────────────────────────────
+   112→// NEVER logged, NEVER sent to clients
+   113→
+   114→function loadToken(): string | null {
+   115→  const envToken = process.env.UPSTOX_ANALYTICS_TOKEN;
+   116→  if (envToken && envToken.trim() !== '' && !envToken.includes('YOUR_')) {
+   117→    return envToken.trim();
+   118→  }
+   119→
+   120→  const paths = [
+   121→    join(__dirname, '../../.env.local'),
+   122→    join(__dirname, '../../.env'),
+   123→  ];
+   124→
+   125→  for (const p of paths) {
+   126→    try {
+   127→      const content = readFileSync(p, 'utf-8');
+   128→      for (const line of content.split('\n')) {
+   129→        const trimmed = line.trim();
+   130→        if (trimmed.startsWith('#') || trimmed === '') continue;
+   131→        const eqIdx = trimmed.indexOf('=');
+   132→        if (eqIdx < 0) continue;
+   133→        const key = trimmed.substring(0, eqIdx).trim();
+   134→        const val = trimmed.substring(eqIdx + 1).trim();
+   135→        if (key === 'UPSTOX_ANALYTICS_TOKEN' && val !== '' && !val.includes('YOUR_')) {
+   136→          // Strip surrounding quotes if present
+   137→          const cleaned = val.replace(/^['"]|['"]$/g, '');
+   138→          if (cleaned) return cleaned;
+   139→        }
+   140→      }
+   141→    } catch {
+   142→      // File not found
+   143→    }
+   144→  }
+   145→
+   146→  return null;
+   147→}
+   148→
+   149→// ── Utility ─────────────────────────────────────────────────────────
+   150→
+   151→function num(v: unknown, fallback = 0): number {
+   152→  return typeof v === 'number' && !isNaN(v) ? v : fallback;
+   153→}
+   154→
+   155→function safeNum(n: number | Long | null | undefined, fallback = 0): number {
+   156→  if (n == null) return fallback;
+   157→  if (typeof n === 'number') return isNaN(n) ? fallback : n;
+   158→  // Long object from protobufjs
+   159→  if (typeof n === 'object' && 'toNumber' in n) {
+   160→    try {
+   161→      const v = (n as { toNumber(): number }).toNumber();
+   162→      return isNaN(v) ? fallback : v;
+   163→    } catch {
+   164→      return fallback;
+   165→    }
+   166→  }
+   167→  return fallback;
+   168→}
+   169→
+   170→function getBackoffDelay(attempt: number): number {
+   171→  const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt);
+   172→  return Math.min(delay, RECONNECT_MAX_DELAY_MS);
+   173→}
+   174→
+   175→function generateGuid(): string {
+   176→  return `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+   177→}
+   178→
+   179→// ── Protobuf Decoder ────────────────────────────────────────────────
+   180→
+   181→let protobufRoot: protobuf.Root | null = null;
+   182→let FeedResponseType: protobuf.Type | null = null;
+   183→
+   184→class UpstoxFeedManager {
+   185→  private ws: WsLib | null = null;
+   186→  private token: string | null;
+   187→  private subscribedKeys = new Set<string>();
+   188→  private pendingSubscribeKeys = new Set<string>();
+   189→  private reconnectAttempt = 0;
+   190→  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+   191→  private isShuttingDown = false;
+   192→  private lastTickTimes = new Map<string, number>();
+   193→  private onTick: (tick: NormalizedTick) => void;
+   194→  private onStatusChange: (status: ConnectionStatus) => void;
+   195→  private subGuid = 0;
+   196→  private _lastConnectTime: string | undefined;
+   197→  private initialFeedReceived = new Set<string>();
+   198→
+   199→  constructor(
+   200→    token: string | null,
+   201→    onTick: (tick: NormalizedTick) => void,
+   202→    onStatusChange: (status: ConnectionStatus) => void,
+   203→  ) {
+   204→    this.token = token;
+   205→    this.onTick = onTick;
+   206→    this.onStatusChange = onStatusChange;
+   207→  }
+   208→
+   209→  getStatus(): ConnectionStatus {
+   210→    if (!this.ws) return 'DISCONNECTED';
+   211→    if (this.ws.readyState === WsLib.CONNECTING) return 'CONNECTING';
+   212→    if (this.ws.readyState === WsLib.OPEN) return 'CONNECTED';
+   213→    return 'DISCONNECTED';
+   214→  }
+   215→
+   216→  getReconnectAttempt(): number { return this.reconnectAttempt; }
+   217→  getLastUpstoxConnect(): string | undefined { return this._lastConnectTime; }
+   218→
+   219→  getSubscribedSymbols(): string[] {
+   220→    const symbols: string[] = [];
+   221→    for (const key of this.subscribedKeys) {
+   222→      const entry = Object.values(SYMBOL_MAP).find((e) => e.instrumentKey === key);
+   223→      if (entry) symbols.push(entry.symbol);
+   224→    }
+   225→    return symbols;
+   226→  }
+   227→
+   228→  getStaleSymbols(): string[] {
+   229→    const now = Date.now();
+   230→    const stale: string[] = [];
+   231→    for (const [sym, ts] of this.lastTickTimes) {
+   232→      if (now - ts > STALE_THRESHOLD_MS) stale.push(sym);
+   233→    }
+   234→    return stale;
+   235→  }
+   236→
+   237→  subscribe(symbols: string[], mode: string = 'full'): boolean {
+   238→    if (!this.ws || this.ws.readyState !== WsLib.OPEN) {
+   239→      // Queue for when connection is established
+   240→      for (const sym of symbols) {
+   241→        const upper = sym.toUpperCase();
+   242→        const entry = SYMBOL_MAP[upper];
+   243→        if (entry) this.pendingSubscribeKeys.add(entry.instrumentKey);
+   244→      }
+   245→      console.log(`[Upstox] Queued subscribe (not connected): ${symbols.join(', ')}`);
+   246→      return false;
+   247→    }
+   248→
+   249→    const keysToSubscribe: string[] = [];
+   250→    for (const sym of symbols) {
+   251→      const upper = sym.toUpperCase();
+   252→      const entry = SYMBOL_MAP[upper];
+   253→      if (entry && !this.subscribedKeys.has(entry.instrumentKey)) {
+   254→        keysToSubscribe.push(entry.instrumentKey);
+   255→      }
+   256→    }
+   257→
+   258→    if (keysToSubscribe.length === 0) return true;
+   259→
+   260→    this.subGuid++;
+   261→    const msg = {
+   262→      guid: generateGuid(),
+   263→      method: 'sub',
+   264→      data: {
+   265→        mode,
+   266→        instrumentKeys: keysToSubscribe,
+   267→      },
+   268→    };
+   269→
+   270→    try {
+   271→      this.ws.send(Buffer.from(JSON.stringify(msg)));
+   272→      for (const k of keysToSubscribe) {
+   273→        this.subscribedKeys.add(k);
+   274→        this.pendingSubscribeKeys.delete(k);
+   275→      }
+   276→      console.log(`[Upstox] Subscribe sent: ${keysToSubscribe.join(', ')}`);
+   277→      return true;
+   278→    } catch (err) {
+   279→      console.error('[Upstox] Failed to send subscribe:', err);
+   280→      return false;
+   281→    }
+   282→  }
+   283→
+   284→  unsubscribe(symbols: string[]): boolean {
+   285→    if (!this.ws || this.ws.readyState !== WsLib.OPEN) return false;
+   286→
+   287→    const keysToUnsub: string[] = [];
+   288→    for (const sym of symbols) {
+   289→      const upper = sym.toUpperCase();
+   290→      const entry = SYMBOL_MAP[upper];
+   291→      if (entry && this.subscribedKeys.has(entry.instrumentKey)) {
+   292→        keysToUnsub.push(entry.instrumentKey);
+   293→      }
+   294→    }
+   295→
+   296→    if (keysToUnsub.length === 0) return true;
+   297→
+   298→    this.subGuid++;
+   299→    const msg = {
+   300→      guid: generateGuid(),
+   301→      method: 'unsub',
+   302→      data: { instrumentKeys: keysToUnsub },
+   303→    };
+   304→
+   305→    try {
+   306→      this.ws.send(Buffer.from(JSON.stringify(msg)));
+   307→      for (const k of keysToUnsub) this.subscribedKeys.delete(k);
+   308→      console.log(`[Upstox] Unsubscribe sent: ${keysToUnsub.join(', ')}`);
+   309→      return true;
+   310→    } catch (err) {
+   311→      console.error('[Upstox] Failed to send unsubscribe:', err);
+   312→      return false;
+   313→    }
+   314→  }
+   315→
+   316→  connect(): void {
+   317→    if (this.isShuttingDown) return;
+   318→    if (this.ws && this.ws.readyState === WsLib.OPEN) return;
+   319→
+   320→    if (!this.token) {
+   321→      console.error('[Upstox] No UPSTOX_ANALYTICS_TOKEN configured');
+   322→      this.onStatusChange('ERROR');
+   323→      return;
+   324→    }
+   325→
+   326→    if (!FeedResponseType) {
+   327→      console.error('[Upstox] Protobuf not initialized yet, retrying in 1s...');
+   328→      setTimeout(() => this.connect(), 1000);
+   329→      return;
+   330→    }
+   331→
+   332→    this.cleanupWs();
+   333→
+   334→    if (this.reconnectAttempt > 0) {
+   335→      this.onStatusChange('RECONNECTING');
+   336→    } else {
+   337→      this.onStatusChange('CONNECTING');
+   338→    }
+   339→
+   340→    console.log(`[Upstox] Connecting (attempt ${this.reconnectAttempt + 1})...`);
+   341→
+   342→    try {
+   343→      this.ws = new WsLib(UPSTOX_WS_URL, {
+   344→        headers: {
+   345→          Authorization: `Bearer ${this.token}`,
+   346→          Accept: 'application/json',
+   347→          'Api-Version': '3',
+   348→        },
+   349→        followRedirects: true,
+   350→        handshakeTimeout: 15000,
+   351→      });
+   352→    } catch (err) {
+   353→      console.error('[Upstox] WebSocket creation failed:', err);
+   354→      this.scheduleReconnect();
+   355→      return;
+   356→    }
+   357→
+   358→    this.ws.on('open', () => {
+   359→      console.log('[Upstox] Connected to feed');
+   360→      this.reconnectAttempt = 0;
+   361→      this._lastConnectTime = new Date().toISOString();
+   362→      this.onStatusChange('CONNECTED');
+   363→
+   364→      // Restore subscriptions
+   365→      const keysToRestore = [...this.subscribedKeys];
+   366→      if (keysToRestore.length > 0) {
+   367→        this.subGuid++;
+   368→        const msg = {
+   369→          guid: generateGuid(),
+   370→          method: 'sub',
+   371→          data: { mode: 'full', instrumentKeys: keysToRestore },
+   372→        };
+   373→        this.ws!.send(Buffer.from(JSON.stringify(msg)));
+   374→        console.log(`[Upstox] Restored ${keysToRestore.length} subscription(s)`);
+   375→      }
+   376→
+   377→      // Send pending subscriptions
+   378→      if (this.pendingSubscribeKeys.size > 0) {
+   379→        const pendingKeys = [...this.pendingSubscribeKeys];
+   380→        this.subGuid++;
+   381→        const msg = {
+   382→          guid: generateGuid(),
+   383→          method: 'sub',
+   384→          data: { mode: 'full', instrumentKeys: pendingKeys },
+   385→        };
+   386→        this.ws!.send(Buffer.from(JSON.stringify(msg)));
+   387→        for (const k of pendingKeys) {
+   388→          this.subscribedKeys.add(k);
+   389→        }
+   390→        this.pendingSubscribeKeys.clear();
+   391→        console.log(`[Upstox] Sent ${pendingKeys.length} pending subscription(s)`);
+   392→      }
+   393→    });
+   394→
+   395→    this.ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
+   396→      try {
+   397→        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+   398→        this.decodeAndProcess(buf);
+   399→      } catch (err) {
+   400→        console.error('[Upstox] Failed to process message:', err);
+   401→      }
+   402→    });
+   403→
+   404→    this.ws.on('close', (code: number, reason: Buffer) => {
+   405→      console.log(`[Upstox] Disconnected (code=${code}, reason=${reason.toString() || 'none'})`);
+   406→      this.onStatusChange('DISCONNECTED');
+   407→      if (!this.isShuttingDown) {
+   408→        this.scheduleReconnect();
+   409→      }
+   410→    });
+   411→
+   412→    this.ws.on('error', (err: Error) => {
+   413→      console.error(`[Upstox] WebSocket error: ${err.message}`);
+   414→      this.onStatusChange('ERROR');
+   415→    });
+   416→  }
+   417→
+   418→  private decodeAndProcess(buf: Buffer): void {
+   419→    if (!FeedResponseType) return;
+   420→
+   421→    try {
+   422→      const decoded = FeedResponseType.decode(buf) as any;
+   423→      const feedType = decoded.type;
+   424→
+   425→      // type: 0=initial_feed, 1=live_feed, 2=market_info
+   426→      if (feedType === 2) {
+   427→        // Market status info
+   428→        if (decoded.marketInfo) {
+   429→          const segments = decoded.marketInfo.segmentStatus;
+   430→          if (segments) {
+   431→            for (const [segment, status] of Object.entries(segments)) {
+   432→              const statusName = MARKET_STATUS_MAP[safeNum(status as any, -1)] || 'UNKNOWN';
+   433→              console.log(`[Upstox] Market status: ${segment} = ${statusName}`);
+   434→            }
+   435→          }
+   436→        }
+   437→        return;
+   438→      }
+   439→
+   440→      const feeds = decoded.feeds;
+   441→      if (!feeds) return;
+   442→
+   443→      const currentTs = safeNum(decoded.currentTs, Date.now());
+   444→
+   445→      for (const [instrumentKey, feed] of Object.entries(feeds)) {
+   446→        if (!feed) continue;
+   447→
+   448→        const mapping = Object.values(SYMBOL_MAP).find(
+   449→          (e) => e.instrumentKey === instrumentKey,
+   450→        );
+   451→        if (!mapping) continue;
+   452→
+   453→        const tick = this.extractTick(mapping, feed, currentTs, feedType);
+   454→        if (tick) {
+   455→          this.onTick(tick);
+   456→        }
+   457→      }
+   458→    } catch (err) {
+   459→      // Silently skip malformed protobuf (e.g., the initial exchange list message)
+   460→      const firstBytes = buf.subarray(0, 5).toString('hex');
+   461→      if (firstBytes !== '08021') { // Skip the expected exchange-list control message
+   462→        console.error('[Upstox] Protobuf decode error:', (err as Error).message);
+   463→      }
+   464→    }
+   465→  }
+   466→
+   467→  private extractTick(
+   468→    mapping: SymbolEntry,
+   469→    feed: any,
+   470→    currentTs: number,
+   471→    feedType: number,
+   472→  ): NormalizedTick | null {
+   473→    let ltp = 0;
+   474→    let ltt = 0;
+   475→    let cp = 0;
+   476→    let vtt = 0;
+   477→    let open = 0;
+   478→    let high = 0;
+   479→    let low = 0;
+   480→    let close = 0;
+   481→    let isIndex = false;
+   482→
+   483→    // Navigate: feed.fullFeed → marketFF (equity) or indexFF (index)
+   484→    if (feed.fullFeed) {
+   485→      if (feed.fullFeed.marketFF) {
+   486→        const mff = feed.fullFeed.marketFF;
+   487→        if (mff.ltpc) {
+   488→          ltp = safeNum(mff.ltpc.ltp);
+   489→          ltt = safeNum(mff.ltpc.ltt);
+   490→          cp = safeNum(mff.ltpc.cp);
+   491→        }
+   492→        vtt = safeNum(mff.vtt);
+   493→        if (mff.marketOHLC && mff.marketOHLC.ohlc) {
+   494→          for (const ohlcItem of mff.marketOHLC.ohlc) {
+   495→            if (!ohlcItem) continue;
+   496→            const interval = String(ohlcItem.interval || '');
+   497→            if (interval === '1d') {
+   498→              open = safeNum(ohlcItem.open);
+   499→              high = safeNum(ohlcItem.high);
+   500→              low = safeNum(ohlcItem.low);
+   501→              close = safeNum(ohlcItem.close);
+   502→            }
+   503→          }
+   504→        }
+   505→      } else if (feed.fullFeed.indexFF) {
+   506→        isIndex = true;
+   507→        const iff = feed.fullFeed.indexFF;
+   508→        if (iff.ltpc) {
+   509→          ltp = safeNum(iff.ltpc.ltp);
+   510→          ltt = safeNum(iff.ltpc.ltt);
+   511→          cp = safeNum(iff.ltpc.cp);
+   512→        }
+   513→        if (iff.marketOHLC && iff.marketOHLC.ohlc) {
+   514→          for (const ohlcItem of iff.marketOHLC.ohlc) {
+   515→            if (!ohlcItem) continue;
+   516→            const interval = String(ohlcItem.interval || '');
+   517→            if (interval === '1d') {
+   518→              open = safeNum(ohlcItem.open);
+   519→              high = safeNum(ohlcItem.high);
+   520→              low = safeNum(ohlcItem.low);
+   521→              close = safeNum(ohlcItem.close);
+   522→            }
+   523→          }
+   524→        }
+   525→      }
+   526→    }
+   527→
+   528→    // Direct LTPC feed (ltpc mode)
+   529→    if (!ltp && feed.ltpc) {
+   530→      ltp = safeNum(feed.ltpc.ltp);
+   531→      ltt = safeNum(feed.ltpc.ltt);
+   532→      cp = safeNum(feed.ltpc.cp);
+   533→    }
+   534→
+   535→    // firstLevelWithGreeks
+   536→    if (!ltp && feed.firstLevelWithGreeks) {
+   537→      const flg = feed.firstLevelWithGreeks;
+   538→      if (flg.ltpc) {
+   539→        ltp = safeNum(flg.ltpc.ltp);
+   540→        ltt = safeNum(flg.ltpc.ltt);
+   541→        cp = safeNum(flg.ltpc.cp);
+   542→      }
+   543→      vtt = safeNum(flg.vtt);
+   544→    }
+   545→
+   546→    if (ltp <= 0) return null;
+   547→
+   548→    // cp = previous close price from Upstox LTPC
+   549→    const prevClose = cp > 0 ? cp : 0;
+   550→    const change = ltp - prevClose;
+   551→    const changePercent = prevClose > 0 ? (change / prevClose) * 100 : 0;
+   552→
+   553→    this.lastTickTimes.set(mapping.symbol, Date.now());
+   554→
+   555→    if (feedType === 0) {
+   556→      if (!this.initialFeedReceived.has(mapping.symbol)) {
+   557→        this.initialFeedReceived.add(mapping.symbol);
+   558→        console.log(`[Upstox] Initial feed: ${mapping.symbol} LTP=${ltp} CP=${cp} Vol=${vtt}`);
+   559→      }
+   560→    } else if (feedType === 1) {
+   561→      // Log live ticks occasionally (every ~30s per symbol to avoid spam)
+   562→      const lastLog = (this as any).lastLiveLogTimes?.get(mapping.symbol) || 0;
+   563→      if (Date.now() - lastLog > 30000) {
+   564→        console.log(`[Upstox] Live tick: ${mapping.symbol} LTP=${ltp}`);
+   565→        if (!(this as any).lastLiveLogTimes) (this as any).lastLiveLogTimes = new Map();
+   566→        (this as any).lastLiveLogTimes.set(mapping.symbol, Date.now());
+   567→      }
+   568→    }
+   569→
+   570→    // Build timestamp from ltt (seconds since epoch)
+   571→    const tickTs = ltt > 0 ? new Date(ltt * 1000).toISOString() : new Date(currentTs).toISOString();
+   572→
+   573→    const tick: NormalizedTick = {
+   574→      symbol: mapping.symbol,
+   575→      exchange: mapping.exchange,
+   576→      price: ltp,
+   577→      change: Math.round(change * 100) / 100,
+   578→      changePercent: Math.round(changePercent * 100) / 100,
+   579→      volume: vtt,
+   580→      timestamp: tickTs,
+   581→      source: 'upstox',
+   582→      dataStatus: 'LIVE',
+   583→      ltp,
+   584→      ...(open > 0 ? { open } : {}),
+   585→      ...(high > 0 ? { high } : {}),
+   586→      ...(low > 0 ? { low } : {}),
+   587→      ...(close > 0 ? { close } : {}),
+   588→      ...(prevClose > 0 ? { previousClose: prevClose } : {}),
+   589→      marketStatus: isIndex ? 'INDEX' : 'EQUITY',
+   590→    };
+   591→
+   592→    return tick;
+   593→  }
+   594→
+   595→  private scheduleReconnect(): void {
+   596→    if (this.isShuttingDown) return;
+   597→    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+   598→      console.error(`[Upstox] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached.`);
+   599→      this.onStatusChange('ERROR');
+   600→      return;
+   601→    }
+   602→
+   603→    const delay = getBackoffDelay(this.reconnectAttempt);
+   604→    this.reconnectAttempt++;
+   605→    console.log(`[Upstox] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})...`);
+   606→
+   607→    this.reconnectTimer = setTimeout(() => {
+   608→      this.reconnectTimer = null;
+   609→      this.connect();
+   610→    }, delay);
+   611→  }
+   612→
+   613→  private cleanupWs(): void {
+   614→    if (this.reconnectTimer) {
+   615→      clearTimeout(this.reconnectTimer);
+   616→      this.reconnectTimer = null;
+   617→    }
+   618→    if (this.ws) {
+   619→      this.ws.removeAllListeners();
+   620→      try {
+   621→        if (this.ws.readyState === WsLib.OPEN || this.ws.readyState === WsLib.CONNECTING) {
+   622→          this.ws.close(1000, 'Cleanup');
+   623→        }
+   624→      } catch {
+   625→        // Ignore
+   626→      }
+   627→      this.ws = null;
+   628→    }
+   629→  }
+   630→
+   631→  shutdown(): void {
+   632→    this.isShuttingDown = true;
+   633→    console.log('[Upstox] Shutting down...');
+   634→    this.cleanupWs();
+   635→    this.onStatusChange('DISCONNECTED');
+   636→  }
+   637→}
+   638→
+   639→// ── Socket.IO Server ────────────────────────────────────────────────
+   640→
+   641→const httpServer = createServer();
+   642→const io = new Server(httpServer, {
+   643→  cors: { origin: '*', methods: ['GET', 'POST'] },
+   644→  pingTimeout: 60000,
+   645→  pingInterval: 25000,
+   646→});
+   647→
+   648→// ── Token & Manager Setup ───────────────────────────────────────────
+   649→
+   650→const token = loadToken();
+   651→if (!token) {
+   652→  console.warn('[Streamer] WARNING: UPSTOX_ANALYTICS_TOKEN not found');
+   653→  console.warn('[Streamer] Upstox WebSocket will NOT connect.');
+   654→} else {
+   655→  console.log('[Streamer] Upstox token loaded successfully');
+   656→}
+   657→
+   658→const latestTicks: Record<string, NormalizedTick> = {};
+   659→let upstoxConnectionStatus: ConnectionStatus = 'DISCONNECTED';
+   660→
+   661→const feedManager = new UpstoxFeedManager(
+   662→  token,
+   663→  (tick: NormalizedTick) => {
+   664→    latestTicks[tick.symbol] = tick;
+   665→    io.emit('tick', tick);
+   666→  },
+   667→  (status: ConnectionStatus) => {
+   668→    upstoxConnectionStatus = status;
+   669→    io.emit('connection_status', { upstoxStatus: status });
+   670→    console.log(`[Streamer] Upstox status: ${status}`);
+   671→  },
+   672→);
+   673→
+   674→// ── Socket.IO Event Handlers ────────────────────────────────────────
+   675→
+   676→io.on('connection', (socket) => {
+   677→  console.log(`[Streamer] Client connected: ${socket.id} (total: ${io.engine.clientsCount})`);
+   678→
+   679→  socket.emit('connection_status', getConnectionInfo());
+   680→
+   681→  const currentTicks = Object.values(latestTicks);
+   682→  if (currentTicks.length > 0) {
+   683→    socket.emit('initial_ticks', currentTicks);
+   684→  }
+   685→
+   686→  socket.on('subscribe', (symbols: string[]) => {
+   687→    if (!Array.isArray(symbols)) return;
+   688→    const validSymbols = symbols.filter((s) => s.toUpperCase() in SYMBOL_MAP);
+   689→    if (validSymbols.length === 0) return;
+   690→
+   691→    console.log(`[Streamer] ${socket.id} subscribe: ${validSymbols.join(', ')}`);
+   692→    const success = feedManager.subscribe(validSymbols);
+   693→    socket.emit('subscribe_result', {
+   694→      symbols: validSymbols,
+   695→      success,
+   696→      subscribedSymbols: feedManager.getSubscribedSymbols(),
+   697→    });
+   698→  });
+   699→
+   700→  socket.on('unsubscribe', (symbols: string[]) => {
+   701→    if (!Array.isArray(symbols)) return;
+   702→    const validSymbols = symbols.filter((s) => s.toUpperCase() in SYMBOL_MAP);
+   703→    if (validSymbols.length === 0) return;
+   704→
+   705→    console.log(`[Streamer] ${socket.id} unsubscribe: ${validSymbols.join(', ')}`);
+   706→    feedManager.unsubscribe(validSymbols);
+   707→    socket.emit('unsubscribe_result', {
+   708→      symbols: validSymbols,
+   709→      subscribedSymbols: feedManager.getSubscribedSymbols(),
+   710→    });
+   711→  });
+   712→
+   713→  socket.on('get_status', () => {
+   714→    socket.emit('connection_status', getConnectionInfo());
+   715→  });
+   716→
+   717→  socket.on('disconnect', () => {
+   718→    console.log(`[Streamer] Client disconnected: ${socket.id} (total: ${io.engine.clientsCount})`);
+   719→  });
+   720→});
+   721→
+   722→// ── Helper Functions ────────────────────────────────────────────────
+   723→
+   724→function getConnectionInfo(): ConnectionInfo {
+   725→  return {
+   726→    status: upstoxConnectionStatus,
+   727→    upstoxStatus: upstoxConnectionStatus,
+   728→    subscribedSymbols: feedManager.getSubscribedSymbols(),
+   729→    staleSymbols: feedManager.getStaleSymbols(),
+   730→    connectedClients: io.engine.clientsCount,
+   731→    lastUpstoxConnect: feedManager.getLastUpstoxConnect(),
+   732→    reconnectAttempt: feedManager.getReconnectAttempt(),
+   733→  };
+   734→}
+   735→
+   736→// ── Periodic Heartbeat ──────────────────────────────────────────────
+   737→
+   738→setInterval(() => {
+   739→  const info = getConnectionInfo();
+   740→  io.emit('heartbeat', {
+   741→    timestamp: new Date().toISOString(),
+   742→    ...info,
+   743→  });
+   744→}, HEARTBEAT_INTERVAL_MS);
+   745→
+   746→// ── Start Server ────────────────────────────────────────────────────
+   747→
+   748→// Initialize protobuf first, then start
+   749→const protoPath = resolve(__dirname, './proto/MarketDataFeedV3.proto');
+   750→protobuf.load(protoPath, (error, root) => {
+   751→  if (error) {
+   752→    console.error('[Streamer] FATAL: Failed to load protobuf definition:', error);
+   753→    process.exit(1);
+   754→  }
+   755→
+   756→  protobufRoot = root!;
+   757→  FeedResponseType = root!.lookupType('com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse');
+   758→  console.log('[Streamer] Protobuf loaded successfully');
+   759→
+   760→  httpServer.listen(PORT, () => {
+   761→    console.log(`[Streamer] Price streaming service running on port ${PORT}`);
+   762→
+   763→    if (token) {
+   764→      setTimeout(() => {
+   765→        feedManager.connect();
+   766→        // Subscribe to initial symbols after connection
+   767→        setTimeout(() => {
+   768→          feedManager.subscribe(INITIAL_SYMBOLS);
+   769→        }, 2000);
+   770→      }, 500);
+   771→    } else {
+   772→      console.log('[Streamer] Waiting for UPSTOX_ANALYTICS_TOKEN...');
+   773→    }
+   774→  });
+   775→});
+   776→
+   777→// ── Global Error Handling ───────────────────────────────────────────
+   778→
+   779→process.on('uncaughtException', (err) => {
+   780→  console.error('[Streamer] Uncaught exception:', err);
+   781→});
+   782→
+   783→process.on('unhandledRejection', (reason) => {
+   784→  console.error('[Streamer] Unhandled rejection:', reason);
+   785→});
+   786→
+   787→// ── Graceful Shutdown ───────────────────────────────────────────────
+   788→
+   789→function shutdown() {
+   790→  console.log('[Streamer] Received shutdown signal...');
+   791→  feedManager.shutdown();
+   792→  io.close();
+   793→  httpServer.close(() => {
+   794→    console.log('[Streamer] Server closed');
+   795→    process.exit(0);
+   796→  });
+   797→  setTimeout(() => process.exit(0), 5000);
+   798→}
+   799→
+   800→process.on('SIGTERM', shutdown);
+   801→process.on('SIGINT', shutdown);
+   802→
