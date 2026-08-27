@@ -183,12 +183,23 @@ export const upstoxProvider: MarketDataProvider = {
     if (cached) return cached;
 
     try {
-      const toDate = new Date();
-      const fromDate = new Date();
-      fromDate.setDate(fromDate.getDate() - days + 5); // buffer for weekends/holidays
+      // ── Date calculation (IST-aware) ────────────────────────
+      // Upstox V2 expects: /day/{toDate}/{fromDate}  where toDate >= fromDate
+      // toDate is the more recent date, fromDate is the older date.
+      // We use IST dates (not UTC) because NSE trading follows IST calendar.
+      const now = new Date();
+      const istOffsetMs = 5.5 * 60 * 60 * 1000; // IST = UTC+5:30
+      const istNow = new Date(now.getTime() + istOffsetMs + now.getTimezoneOffset() * 60 * 1000);
 
-      const toStr = toDate.toISOString().split('T')[0];
-      const fromStr = fromDate.toISOString().split('T')[0];
+      // toDate = today in IST
+      const toStr = istNow.toISOString().split('T')[0];
+
+      // fromDate = (days + buffer) calendar days before today in IST
+      // Buffer of ~40% extra calendar days to account for weekends/holidays
+      const calendarDaysBack = Math.ceil(days * 1.45) + 2;
+      const fromIST = new Date(istNow);
+      fromIST.setDate(fromIST.getDate() - calendarDaysBack);
+      const fromStr = fromIST.toISOString().split('T')[0];
 
       // V2 historical candle: toDate BEFORE fromDate in URL path
       const url = `${UPSTOX_BASE_URL}/v2/historical-candle/${encodeURIComponent(mapping.instrumentKey)}/day/${toStr}/${fromStr}`;
@@ -217,6 +228,8 @@ export const upstoxProvider: MarketDataProvider = {
       }
 
       // Upstox candle format: [timestamp, open, high, low, close, volume, OI] — 7 elements
+      // Upstox V2 returns candles in REVERSE chronological order (newest first).
+      // We need: most recent `days` candles in CHRONOLOGICAL order (oldest first).
       const result: OHLCVCandle[] = candles
         .map((c: unknown[]) => {
           if (!Array.isArray(c) || c.length < 6) return null;
@@ -239,20 +252,22 @@ export const upstoxProvider: MarketDataProvider = {
             volume: isNaN(volume) ? 0 : volume,
           };
         })
-        .filter((c: OHLCVCandle | null): c is OHLCVCandle => c !== null)
-        .slice(-days);
+        .filter((c: OHLCVCandle | null): c is OHLCVCandle => c !== null);
 
-      if (result.length < 3) {
+      // Take the first `days` elements (newest) then reverse to chronological
+      const sliced = result.slice(0, days).reverse();
+
+      if (sliced.length < 3) {
         return {
           code: 'NO_DATA',
-          message: `Insufficient historical data for ${upper} (got ${result.length} candles)`,
+          message: `Insufficient historical data for ${upper} (got ${sliced.length} candles)`,
           symbol: upper,
           provider: 'upstox',
         };
       }
 
-      setCache(cacheKey, result);
-      return result;
+      setCache(cacheKey, sliced);
+      return sliced;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       return { code: 'NETWORK_ERROR', message, symbol: upper, provider: 'upstox' };
