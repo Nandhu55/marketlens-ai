@@ -1,11 +1,12 @@
-// Upstox V3 Market Data Provider
+// Upstox Market Data Provider
 // Server-side only. Token is never sent to the client.
 //
-// Upstox V3 API endpoints used:
-//   - Market Quote:  GET /v3/market-quote/{instrumentKey}
-//   - Historical:    GET /v3/historical-candle/{instrumentKey}/{interval}/{toDate}/{fromDate}
+// Upstox API endpoints used (verified against live API):
+//   - Quote:          GET /v2/market-quote/quotes?instrument_key={key}&instrument_key={key2}
+//   - Historical:     GET /v2/historical-candle/{instrumentKey}/{interval}/{toDate}/{fromDate}
 //
 // Authentication: Bearer token from UPSTOX_ANALYTICS_TOKEN env var.
+// Candle format (7 elements): [timestamp, open, high, low, close, volume, OI]
 
 import type {
   MarketQuote,
@@ -14,11 +15,11 @@ import type {
   ProviderStatus,
   MarketDataError,
 } from './types';
-import { getInstrumentKey, getIndianSymbolMapping, type SymbolMappingEntry } from './symbol-mapping';
+import { getIndianSymbolMapping } from './symbol-mapping';
 import { getIndianMarketStatus } from './indian-market-status';
 import { getCached, setCache } from '@/lib/cache';
 
-const UPSTOX_BASE_URL = 'https://api.upstox.com/v3';
+const UPSTOX_BASE_URL = 'https://api.upstox.com';
 
 // ── Token Access ────────────────────────────────────────────────
 // NEVER logged, never returned, never put in NEXT_PUBLIC_
@@ -29,69 +30,42 @@ function getToken(): string | null {
   return token.trim();
 }
 
-// ── Helper: HTTP with auth + timeout ────────────────────────────
+// ── Headers ──────────────────────────────────────────────────────
 
-async function upstoxFetch<T>(path: string, timeoutMs: number = 15000): Promise<T> {
+function getAuthHeaders(): Record<string, string> {
   const token = getToken();
-  if (!token) {
-    throw Object.assign(new Error('UPSTOX_ANALYTICS_TOKEN is not configured'), {
-      code: 'NOT_CONFIGURED' as ProviderStatus,
-    });
-  }
+  return {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+}
 
-  const url = `${UPSTOX_BASE_URL}${path}`;
+// ── Helper: fetch with timeout ─────────────────────────────────
 
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeout?: number }
+): Promise<Response> {
+  const { timeout = 15000, ...rest } = options;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      signal: controller.signal,
-    });
-
-    if (response.status === 401 || response.status === 403) {
-      throw Object.assign(new Error('Upstox authentication failed'), {
-        code: 'AUTH_ERROR' as ProviderStatus,
-      });
-    }
-
-    if (response.status === 429) {
-      throw Object.assign(new Error('Upstox rate limit reached'), {
-        code: 'RATE_LIMITED' as ProviderStatus,
-      });
-    }
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw Object.assign(new Error(`Upstox API error ${response.status}: ${body.substring(0, 200)}`), {
-        code: 'NETWORK_ERROR' as ProviderStatus,
-      });
-    }
-
-    return (await response.json()) as T;
-  } catch (err: unknown) {
-    // Preserve our custom error codes
-    if (err && typeof err === 'object' && 'code' in err) throw err;
-
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw Object.assign(new Error('Market data provider temporarily unavailable'), {
-        code: 'NETWORK_ERROR' as ProviderStatus,
-      });
-    }
-
-    throw Object.assign(
-      new Error(err instanceof Error ? err.message : 'Network error'),
-      { code: 'NETWORK_ERROR' as ProviderStatus }
-    );
+    return await fetch(url, { ...rest, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Extract numeric value from unknown with a fallback. */
+function num(v: unknown, fallback = 0): number {
+  return typeof v === 'number' && !isNaN(v) ? v : fallback;
+}
+
+/** Safe division, returns 0 if divisor is 0 or invalid. */
+function pctChange(current: number, previous: number): number {
+  if (previous <= 0 || current <= 0) return 0;
+  return ((current - previous) / previous) * 100;
 }
 
 // ── Provider Implementation ──────────────────────────────────────
@@ -105,13 +79,13 @@ export const upstoxProvider: MarketDataProvider = {
     if (!token) return 'NOT_CONFIGURED';
 
     try {
-      // Quick health check: try fetching NIFTY 50 quote
-      await upstoxFetch('/market-quote/NSE_INDEX%7CNifty%2050', 8000);
-      return 'CONNECTED';
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'code' in err) {
-        return (err as { code: ProviderStatus }).code;
-      }
+      const url = `${UPSTOX_BASE_URL}/v2/market-quote/quotes?instrument_key=${encodeURIComponent('NSE_INDEX|Nifty 50')}`;
+      const resp = await fetchWithTimeout(url, { headers: getAuthHeaders(), timeout: 8000 });
+      if (resp.status === 401 || resp.status === 403) return 'AUTH_ERROR';
+      if (resp.status === 429) return 'RATE_LIMITED';
+      if (resp.ok) return 'CONNECTED';
+      return 'NETWORK_ERROR';
+    } catch {
       return 'NETWORK_ERROR';
     }
   },
@@ -134,44 +108,51 @@ export const upstoxProvider: MarketDataProvider = {
     if (cached) return cached;
 
     try {
-      const encodedKey = encodeURIComponent(mapping.instrumentKey);
-      const data = await upstoxFetch<Record<string, unknown>>(
-        `/market-quote/${encodedKey}`,
-        12000
-      );
+      const url = `${UPSTOX_BASE_URL}/v2/market-quote/quotes?instrument_key=${encodeURIComponent(mapping.instrumentKey)}`;
+      const resp = await fetchWithTimeout(url, { headers: getAuthHeaders(), timeout: 12000 });
 
-      const qd = data?.data as Record<string, unknown> | undefined;
-      if (!qd || typeof qd.last_price !== 'number' || qd.last_price <= 0) {
-        return {
-          code: 'NO_DATA',
-          message: `No market data returned for ${upper}`,
-          symbol: upper,
-          provider: 'upstox',
-        };
+      if (resp.status === 401 || resp.status === 403) {
+        return { code: 'AUTH_ERROR', message: 'Upstox authentication failed', symbol: upper, provider: 'upstox' };
+      }
+      if (resp.status === 429) {
+        return { code: 'RATE_LIMITED', message: 'Upstox rate limit reached', symbol: upper, provider: 'upstox' };
+      }
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        return { code: 'NETWORK_ERROR', message: `Upstox API error ${resp.status}: ${body.substring(0, 200)}`, symbol: upper, provider: 'upstox' };
       }
 
-      const previousClose = typeof qd.previous_close === 'number' ? qd.previous_close
-        : typeof qd.close === 'number' ? qd.close : 0;
-      const lastPrice = qd.last_price as number;
-      const change = previousClose > 0 ? lastPrice - previousClose : 0;
-      const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
-      const ohlc = (qd.ohlc as Record<string, unknown>) || {};
+      const data = (await resp.json()) as Record<string, unknown>;
+      const allData = data?.data as Record<string, Record<string, unknown>> | undefined;
+      if (!allData || Object.keys(allData).length === 0) {
+        return { code: 'NO_DATA', message: `No market data returned for ${upper} (instrument may not be available with current token scope)`, symbol: upper, provider: 'upstox' };
+      }
+
+      // Find the matching entry — key format varies (pipe or colon)
+      const entry = Object.values(allData)[0];
+      const lastPrice = num(entry.last_price);
+      if (lastPrice <= 0) {
+        return { code: 'NO_DATA', message: `Invalid quote data for ${upper}`, symbol: upper, provider: 'upstox' };
+      }
+
+      const ohlc = (entry.ohlc as Record<string, number>) || {};
+      const previousClose = num(ohlc.close);
+      const change = num(entry.net_change);
+      const changePercent = pctChange(lastPrice, previousClose + change);
 
       const quote: MarketQuote = {
         symbol: upper,
         exchange: mapping.exchange,
         market: 'IN',
         price: lastPrice,
-        open: typeof ohlc.open === 'number' ? ohlc.open : undefined,
-        high: typeof ohlc.high === 'number' ? ohlc.high
-          : typeof qd.day_high === 'number' ? qd.day_high : undefined,
-        low: typeof ohlc.low === 'number' ? ohlc.low
-          : typeof qd.day_low === 'number' ? qd.day_low : undefined,
+        open: num(ohlc.open, -1) >= 0 ? ohlc.open : undefined,
+        high: num(ohlc.high, -1) >= 0 ? ohlc.high : undefined,
+        low: num(ohlc.low, -1) >= 0 ? ohlc.low : undefined,
         previousClose: previousClose > 0 ? previousClose : undefined,
-        volume: typeof qd.volume_traded === 'number' ? qd.volume_traded : undefined,
+        volume: num(entry.volume, -1) >= 0 ? entry.volume : undefined,
         change,
         changePercent,
-        timestamp: new Date().toISOString(),
+        timestamp: String(entry.timestamp || new Date().toISOString()),
         marketStatus: getIndianMarketStatus(),
         source: 'upstox',
       };
@@ -179,17 +160,8 @@ export const upstoxProvider: MarketDataProvider = {
       setCache(cacheKey, quote);
       return quote;
     } catch (err: unknown) {
-      const code = (err && typeof err === 'object' && 'code' in err)
-        ? (err as { code: ProviderStatus }).code
-        : 'NETWORK_ERROR';
       const message = err instanceof Error ? err.message : 'Unknown error';
-
-      return {
-        code,
-        message,
-        symbol: upper,
-        provider: 'upstox',
-      };
+      return { code: 'NETWORK_ERROR', message, symbol: upper, provider: 'upstox' };
     }
   },
 
@@ -206,37 +178,45 @@ export const upstoxProvider: MarketDataProvider = {
       };
     }
 
-    // Cache OHLCV for 10 minutes
     const cacheKey = `upstox:ohlcv:${mapping.instrumentKey}:${days}`;
-    const cached = getCached<OHLCVCandle[]>(cacheKey, 600_000);
+    const cached = getCached<OHLCVCandle[]>(cacheKey, 600_000); // 10 min
     if (cached) return cached;
 
     try {
       const toDate = new Date();
       const fromDate = new Date();
-      fromDate.setDate(fromDate.getDate() - days + 5); // extra buffer for non-trading days
+      fromDate.setDate(fromDate.getDate() - days + 5); // buffer for weekends/holidays
 
       const toStr = toDate.toISOString().split('T')[0];
       const fromStr = fromDate.toISOString().split('T')[0];
 
-      const encodedKey = encodeURIComponent(mapping.instrumentKey);
-      const data = await upstoxFetch<Record<string, unknown>>(
-        `/historical-candle/${encodedKey}/1day/${toStr}/${fromStr}`,
-        15000
-      );
+      // V2 historical candle: toDate BEFORE fromDate in URL path
+      const url = `${UPSTOX_BASE_URL}/v2/historical-candle/${encodeURIComponent(mapping.instrumentKey)}/day/${toStr}/${fromStr}`;
+      const resp = await fetchWithTimeout(url, { headers: getAuthHeaders(), timeout: 15000 });
 
+      if (resp.status === 401 || resp.status === 403) {
+        return { code: 'AUTH_ERROR', message: 'Upstox authentication failed', symbol: upper, provider: 'upstox' };
+      }
+      if (resp.status === 429) {
+        return { code: 'RATE_LIMITED', message: 'Upstox rate limit reached', symbol: upper, provider: 'upstox' };
+      }
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        // Distinguish "invalid instrument" from other errors
+        if (body.includes('UDAPI100011')) {
+          return { code: 'NO_DATA', message: `Instrument key not found for ${upper} (may not be available with current token scope)`, symbol: upper, provider: 'upstox' };
+        }
+        return { code: 'NETWORK_ERROR', message: `Upstox API error ${resp.status}: ${body.substring(0, 200)}`, symbol: upper, provider: 'upstox' };
+      }
+
+      const data = (await resp.json()) as Record<string, unknown>;
       const inner = data?.data as Record<string, unknown> | undefined;
       const candles = Array.isArray(inner?.candles) ? inner.candles : [];
       if (!Array.isArray(candles) || candles.length === 0) {
-        return {
-          code: 'NO_DATA',
-          message: `No historical data returned for ${upper}`,
-          symbol: upper,
-          provider: 'upstox',
-        };
+        return { code: 'NO_DATA', message: `No historical data returned for ${upper}`, symbol: upper, provider: 'upstox' };
       }
 
-      // Upstox candle format: [timestamp, open, high, low, close, volume]
+      // Upstox candle format: [timestamp, open, high, low, close, volume, OI] — 7 elements
       const result: OHLCVCandle[] = candles
         .map((c: unknown[]) => {
           if (!Array.isArray(c) || c.length < 6) return null;
@@ -260,9 +240,9 @@ export const upstoxProvider: MarketDataProvider = {
           };
         })
         .filter((c: OHLCVCandle | null): c is OHLCVCandle => c !== null)
-        .slice(-days); // Trim to exactly `days` most recent
+        .slice(-days);
 
-      if (result.length < 5) {
+      if (result.length < 3) {
         return {
           code: 'NO_DATA',
           message: `Insufficient historical data for ${upper} (got ${result.length} candles)`,
@@ -274,17 +254,8 @@ export const upstoxProvider: MarketDataProvider = {
       setCache(cacheKey, result);
       return result;
     } catch (err: unknown) {
-      const code = (err && typeof err === 'object' && 'code' in err)
-        ? (err as { code: ProviderStatus }).code
-        : 'NETWORK_ERROR';
       const message = err instanceof Error ? err.message : 'Unknown error';
-
-      return {
-        code,
-        message,
-        symbol: upper,
-        provider: 'upstox',
-      };
+      return { code: 'NETWORK_ERROR', message, symbol: upper, provider: 'upstox' };
     }
   },
 };
