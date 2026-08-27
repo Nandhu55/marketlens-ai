@@ -46,9 +46,11 @@ import {
   formatPrice,
   formatPercent,
   getChangeColor,
+  isIndianSymbol,
   type OHLCV,
   type StockInfo,
 } from '@/lib/stock-utils';
+import { useLiveMarket, getDataStatus } from '@/hooks/use-live-market';
 import { SectionHeader, LoadingSpinner, EmptyState } from '@/components/shared/animated-counter';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -126,7 +128,16 @@ const TIMEFRAMES = [
 
 // ─── Main LiveMarketPage ────────────────────────────────────────────
 export function LiveMarketPage() {
-  const { selectedStock, setSelectedStock } = useAppStore();
+  const { selectedStock, setSelectedStock, liveTicks, wsConnectionStatus, staleSymbols, subscribedWsSymbols } = useAppStore();
+
+  // Initialize live WebSocket connection
+  useLiveMarket();
+
+  // Get live tick for selected stock
+  const selectedSymbol = selectedStock.symbol.toUpperCase();
+  const liveTick = liveTicks[selectedSymbol];
+  const isTickLive = liveTick && liveTick.dataStatus === 'LIVE' && !staleSymbols.includes(selectedSymbol);
+  const dataStatus = getDataStatus(selectedStock.symbol);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [showSearch, setShowSearch] = useState(false);
@@ -357,18 +368,32 @@ export function LiveMarketPage() {
                 {stockData?.stock?.name && (
                   <span className="text-sm text-slate-400">{stockData.stock.name}</span>
                 )}
-                {stockData?.realQuote && (
+                {isTickLive ? (
                   <Badge className="bg-emerald-500/15 text-emerald-400 text-[10px] font-semibold border-0">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
                     LIVE
+                  </Badge>
+                ) : dataStatus === 'CONNECTING' ? (
+                  <Badge className="bg-amber-500/15 text-amber-400 text-[10px] font-semibold border-0">
+                    CONNECTING
+                  </Badge>
+                ) : stockData?.realQuote && (
+                  <Badge className="bg-slate-500/15 text-slate-400 text-[10px] font-semibold border-0">
+                    REST
                   </Badge>
                 )}
               </div>
-              {stockData?.stock && (
+              {(stockData?.stock || isTickLive) && (
                 <div className="flex items-center gap-3 mt-1">
-                  <span className="text-2xl font-bold text-white">${formatPrice(stockData.stock.price)}</span>
-                  <span className={cn('text-sm font-semibold flex items-center gap-1', getChangeColor(stockData.stock.changePercent))}>
-                    {stockData.stock.changePercent >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
-                    {formatPrice(stockData.stock.change)} ({formatPercent(stockData.stock.changePercent)})
+                  <span className="text-2xl font-bold text-white">
+                    {isTickLive
+                      ? (isIndianSymbol(selectedStock.symbol) ? `₹${formatPrice(liveTick.price)}` : `$${formatPrice(liveTick.price)}`)
+                      : (isIndianSymbol(selectedStock.symbol) ? `₹${formatPrice(stockData!.stock!.price)}` : `$${formatPrice(stockData!.stock!.price)}`)
+                    }
+                  </span>
+                  <span className={cn('text-sm font-semibold flex items-center gap-1', getChangeColor(isTickLive ? liveTick.changePercent : stockData!.stock!.changePercent))}>
+                    {(isTickLive ? liveTick.changePercent : stockData!.stock!.changePercent) >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+                    {formatPrice(isTickLive ? liveTick.change : stockData!.stock!.change)} ({formatPercent(isTickLive ? liveTick.changePercent : stockData!.stock!.changePercent)})
                   </span>
                 </div>
               )}
@@ -639,9 +664,9 @@ export function LiveMarketPage() {
                 <div className="space-y-3 mt-2">
                   {[
                     { label: 'Name', value: stockData.stock.name, icon: Building2 },
-                    { label: 'Price', value: `$${formatPrice(stockData.stock.price)}`, icon: DollarSign },
-                    { label: 'Change', value: `${formatPrice(stockData.stock.change)} (${formatPercent(stockData.stock.changePercent)})`, icon: stockData.stock.changePercent >= 0 ? ArrowUpRight : ArrowDownRight, color: getChangeColor(stockData.stock.changePercent) },
-                    { label: 'Volume', value: formatNumber(stockData.stock.volume), icon: BarChart3 },
+                    { label: 'Price', value: isTickLive ? (isIndianSymbol(selectedStock.symbol) ? `₹${formatPrice(liveTick.price)}` : `$${formatPrice(liveTick.price)}`) : `$${formatPrice(stockData.stock.price)}`, icon: DollarSign },
+                    { label: 'Change', value: isTickLive ? `${formatPrice(liveTick.change)} (${formatPercent(liveTick.changePercent)})` : `${formatPrice(stockData.stock.change)} (${formatPercent(stockData.stock.changePercent)})`, icon: (isTickLive ? liveTick.changePercent : stockData.stock.changePercent) >= 0 ? ArrowUpRight : ArrowDownRight, color: getChangeColor(isTickLive ? liveTick.changePercent : stockData.stock.changePercent) },
+                    { label: 'Volume', value: isTickLive && liveTick.volume > 0 ? formatNumber(liveTick.volume) : formatNumber(stockData.stock.volume), icon: BarChart3 },
                     { label: 'Market Cap', value: stockData.stock.marketCap > 0 ? formatNumber(stockData.stock.marketCap) : 'N/A', icon: Building2 },
                     { label: 'Day Range', value: stockData.stock.dayRange || 'N/A', icon: Target },
                     { label: '52W High', value: stockData.stock.high52w > 0 ? `$${formatPrice(stockData.stock.high52w)}` : 'N/A', icon: TrendingUp },
@@ -703,14 +728,15 @@ export function LiveMarketPage() {
           <div className="glass-card p-4">
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <Clock className="w-3.5 h-3.5" />
-              <span>{stockData?.realQuote ? `Updated: ${new Date(stockData.realQuote.fetchedAt).toLocaleTimeString()}` : 'No recent data'}</span>
+              <span>{isTickLive ? `Updated: ${new Date(liveTick.timestamp).toLocaleTimeString()}` : stockData?.realQuote ? `Updated: ${new Date(stockData.realQuote.fetchedAt).toLocaleTimeString()}` : 'No recent data'}</span>
             </div>
-            {stockData?.realQuote?.source && (
-              <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
-                <History className="w-3.5 h-3.5" />
-                <span>Source: {stockData.realQuote.source}</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+              <History className="w-3.5 h-3.5" />
+              <span>Source: {isTickLive ? 'Upstox WebSocket' : stockData?.realQuote?.source || 'REST API'}</span>
+              <span className={cn('ml-auto px-1.5 py-0.5 rounded text-[9px] font-semibold', dataStatus === 'LIVE' ? 'bg-emerald-500/15 text-emerald-400' : dataStatus === 'CONNECTING' ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-500/15 text-slate-400')}>
+                {dataStatus}
+              </span>
+            </div>
           </div>
         </motion.div>
       </div>

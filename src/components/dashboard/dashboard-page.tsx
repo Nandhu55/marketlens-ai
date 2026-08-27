@@ -27,11 +27,13 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store';
+import { getDataStatus } from '@/hooks/use-live-market';
 import {
   formatNumber,
   formatPrice,
   formatPercent,
   getChangeColor,
+  isIndianSymbol,
   type OHLCV,
 } from '@/lib/stock-utils';
 import { KPICard } from '@/components/shared/kpi-card';
@@ -214,12 +216,13 @@ function FearGreedGauge({ value }: { value: number }) {
 }
 
 // ─── Ticker item component ───────────────────────────────────────────
-function TickerItem({ symbol, price, changePercent }: { symbol: string; price: number; changePercent: number }) {
+function TickerItem({ symbol, price, changePercent, isLive }: { symbol: string; price: number; changePercent: number; isLive?: boolean }) {
   const isPositive = changePercent >= 0;
   return (
     <div className="flex items-center gap-2.5 px-5 py-2 whitespace-nowrap">
+      {isLive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />}
       <span className="text-xs font-bold text-white tracking-wider">{symbol}</span>
-      <span className="text-xs text-slate-300">${formatPrice(price)}</span>
+      <span className="text-xs text-slate-300">{isIndianSymbol(symbol) ? `₹${formatPrice(price)}` : `$${formatPrice(price)}`}</span>
       <span
         className={cn(
           'text-xs font-semibold flex items-center gap-0.5',
@@ -249,7 +252,7 @@ function KPISkeleton() {
 
 // ─── Main Dashboard Page ────────────────────────────────────────────
 export function DashboardPage() {
-  const { realQuotes, selectedStock, watchlist, isLive } = useAppStore();
+  const { realQuotes, selectedStock, watchlist, isLive, liveTicks, wsConnectionStatus, staleSymbols } = useAppStore();
   const [overviewData, setOverviewData] = useState<MarketOverviewResponse | null>(null);
   const [stockData, setStockData] = useState<StockDataResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -291,11 +294,30 @@ export function DashboardPage() {
     fetchStockData();
   }, [fetchStockData]);
 
-  // Ticker data from realQuotes
-  const tickerItems = Object.entries(realQuotes).map(([symbol, q]) => ({
+  // Merge REST quotes with live WebSocket ticks
+  // Live ticks take priority for subscribed symbols
+  const mergedQuotes: Record<string, { price: number; changePercent: number; source: string; isLive: boolean }> = {};
+  // Start with REST quotes
+  for (const [symbol, q] of Object.entries(realQuotes)) {
+    mergedQuotes[symbol] = { price: q.price, changePercent: q.changePercent, source: q.source, isLive: false };
+  }
+  // Overlay with live ticks
+  for (const [symbol, tick] of Object.entries(liveTicks)) {
+    if (tick.dataStatus === 'LIVE' && !staleSymbols.includes(symbol)) {
+      mergedQuotes[symbol] = {
+        price: tick.price,
+        changePercent: tick.changePercent,
+        source: 'upstox-ws',
+        isLive: true,
+      };
+    }
+  }
+
+  const tickerItems = Object.entries(mergedQuotes).map(([symbol, q]) => ({
     symbol,
     price: q.price,
     changePercent: q.changePercent,
+    isLive: q.isLive,
   }));
 
   // Chart data from stock OHLCV
@@ -335,10 +357,10 @@ export function DashboardPage() {
         <motion.div variants={itemVariants} className="glass-card overflow-hidden">
           <div className="flex items-center">
             <div className="flex-shrink-0 px-4 py-2 border-r border-white/5 flex items-center gap-2">
-              {isLive && (
+              {(isLive || wsConnectionStatus === 'CONNECTED') && (
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-400 uppercase tracking-wider">
                   <Zap className="w-3 h-3" />
-                  Live
+                  {wsConnectionStatus === 'CONNECTED' ? 'Live' : 'Loading'}
                 </span>
               )}
               <CandlestickChart className="w-3.5 h-3.5 text-indigo-400" />
@@ -654,6 +676,8 @@ export function DashboardPage() {
               <div className="space-y-2">
                 {watchlist.map((symbol, i) => {
                   const quote = realQuotes[symbol];
+                  const liveTick = liveTicks[symbol];
+                  const isTickLive = liveTick && liveTick.dataStatus === 'LIVE' && !staleSymbols.includes(symbol);
                   return (
                     <motion.div
                       key={symbol}
@@ -665,9 +689,17 @@ export function DashboardPage() {
                       <div className="flex items-center gap-3">
                         <span className="text-sm font-semibold text-white">{symbol}</span>
                       </div>
-                      {quote ? (
+                      {isTickLive ? (
                         <div className="flex items-center gap-3">
-                          <span className="text-sm text-slate-300">${formatPrice(quote.price)}</span>
+                          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span className="text-sm text-slate-300">{isIndianSymbol(symbol) ? `₹${formatPrice(liveTick.price)}` : `$${formatPrice(liveTick.price)}`}</span>
+                          <span className={cn('text-xs font-semibold', getChangeColor(liveTick.changePercent))}>
+                            {formatPercent(liveTick.changePercent)}
+                          </span>
+                        </div>
+                      ) : quote ? (
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm text-slate-300">{isIndianSymbol(symbol) ? `₹${formatPrice(quote.price)}` : `$${formatPrice(quote.price)}`}</span>
                           <span className={cn('text-xs font-semibold', getChangeColor(quote.changePercent))}>
                             {formatPercent(quote.changePercent)}
                           </span>

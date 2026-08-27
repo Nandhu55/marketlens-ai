@@ -55,6 +55,48 @@ export interface AlertItem {
   createdAt: string;
 }
 
+// ── Live Market WebSocket State ──────────────────────────────────────
+
+export type WsConnectionStatus =
+  | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'CONNECTED'
+  | 'RECONNECTING'
+  | 'ERROR';
+
+export type LiveDataStatus = 'LIVE' | 'CONNECTING' | 'UNAVAILABLE';
+
+export interface LiveTick {
+  symbol: string;
+  exchange: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  volume: number;
+  timestamp: string;
+  source: 'upstox';
+  dataStatus: LiveDataStatus;
+  ltp?: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
+  previousClose?: number;
+  marketStatus?: string;
+}
+
+export interface WsConnectionInfo {
+  status: WsConnectionStatus;
+  upstoxStatus: WsConnectionStatus;
+  subscribedSymbols: string[];
+  staleSymbols: string[];
+  connectedClients: number;
+  lastUpstoxConnect?: string;
+  reconnectAttempt?: number;
+}
+
+// ── App State Interface ─────────────────────────────────────────────
+
 interface AppState {
   activePage: PageId;
   setActivePage: (page: PageId) => void;
@@ -69,13 +111,22 @@ interface AppState {
   watchlist: string[];
   addToWatchlist: (symbol: string) => void;
   removeFromWatchlist: (symbol: string) => void;
-  // Real-time data
+  // REST-based real-time data
   realQuotes: Record<string, RealQuote>;
   setRealQuotes: (quotes: Record<string, RealQuote>) => void;
   marketOverview: MarketOverviewData | null;
   setMarketOverview: (overview: MarketOverviewData | null) => void;
   isLive: boolean;
   setIsLive: (live: boolean) => void;
+  // WebSocket live market state
+  wsConnectionStatus: WsConnectionStatus;
+  setWsConnectionStatus: (status: WsConnectionStatus) => void;
+  liveTicks: Record<string, LiveTick>;
+  updateLiveTick: (tick: LiveTick) => void;
+  subscribedWsSymbols: string[];
+  setSubscribedWsSymbols: (symbols: string[]) => void;
+  staleSymbols: string[];
+  setStaleSymbols: (symbols: string[]) => void;
   // Chat messages
   chatMessages: ChatMessage[];
   addChatMessage: (message: ChatMessage) => void;
@@ -122,13 +173,25 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       watchlist: state.watchlist.filter((s) => s !== symbol),
     })),
-  // Real-time data
+  // REST-based real-time data
   realQuotes: {},
   setRealQuotes: (quotes) => set({ realQuotes: quotes }),
   marketOverview: null,
   setMarketOverview: (overview) => set({ marketOverview: overview }),
   isLive: false,
   setIsLive: (live) => set({ isLive: live }),
+  // WebSocket live market state
+  wsConnectionStatus: 'DISCONNECTED',
+  setWsConnectionStatus: (status) => set({ wsConnectionStatus: status }),
+  liveTicks: {},
+  updateLiveTick: (tick) =>
+    set((state) => ({
+      liveTicks: { ...state.liveTicks, [tick.symbol]: tick },
+    })),
+  subscribedWsSymbols: [],
+  setSubscribedWsSymbols: (symbols) => set({ subscribedWsSymbols: symbols }),
+  staleSymbols: [],
+  setStaleSymbols: (symbols) => set({ staleSymbols: symbols }),
   // Chat messages
   chatMessages: [],
   addChatMessage: (message) =>

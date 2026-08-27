@@ -552,3 +552,9 @@ export function getCompanyName(symbol: string): string {
 export function getKnownSymbol(symbol: string) {
   return KNOWN_SYMBOLS.find((s) => s.symbol.toUpperCase() === symbol.toUpperCase());
 }
+
+/** Check whether a symbol is an Indian market symbol (NSE-listed). */
+export function isIndianSymbol(symbol: string): boolean {
+  const upper = symbol.toUpperCase();
+  return KNOWN_SYMBOLS.some((s) => s.symbol === upper && s.exchange === 'NSE');
+}

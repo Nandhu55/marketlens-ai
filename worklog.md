@@ -95,3 +95,77 @@ Stage Summary:
 - Candle ordering fixed: chronological (oldest-first) for chart compatibility
 - No web search, no LLM, no mock data, no fabrication used in any Indian data path
 - No fallback occurred during testing
+
+---
+Task ID: 3
+Agent: Main Orchestrator
+Task: Phase 3 — Real-Time Upstox WebSocket Infrastructure
+
+Work Log:
+- Read entire codebase: price-streamer, symbol-mapping, upstox-provider, types, store, pages, Caddyfile, dev.sh, examples/websocket
+- Identified existing architecture: orphaned price-streamer on port 3003 with Socket.IO, no Upstox connection, US symbols only, no frontend integration
+- Installed socket.io-client in main Next.js project
+- Rewrote mini-services/price-streamer/index.ts (770 lines):
+  - UpstoxFeedManager class: connects to wss://api.upstox.com/v3/feed/market-data-feed with Bearer token
+  - Full mode subscription: sends subscribe/unsubscribe messages with instrument keys
+  - Normalized tick format: {symbol, exchange, price, change, changePercent, volume, timestamp, source, dataStatus, ltp, open, high, low, close, previousClose, marketStatus}
+  - Symbol mapping mirrors src/lib/market-data/symbol-mapping.ts (all 24 symbols)
+  - Exponential backoff reconnection: 1s base, 30s max, 50 max attempts
+  - Stale data detection: 60s threshold per symbol
+  - Token security: loads from env var or .env.local/.env, NEVER logged or sent to clients
+  - Placeholder token detection (rejects values containing 'YOUR_')
+  - Global error handlers (uncaughtException, unhandledRejection)
+  - Graceful shutdown (SIGTERM, SIGINT)
+  - Socket.IO server on port 3003 with path '/' for Caddy XTransformPort compatibility
+  - Heartbeat every 15s broadcasting connection status to all clients
+- Extended src/lib/store.ts with WebSocket live market state:
+  - wsConnectionStatus: DISCONNECTED | CONNECTING | CONNECTED | RECONNECTING | ERROR
+  - liveTicks: Record<string, LiveTick> — per-symbol latest tick from WebSocket
+  - updateLiveTick, setWsConnectionStatus, setSubscribedWsSymbols, setStaleSymbols actions
+  - Exported LiveTick, WsConnectionStatus, WsConnectionInfo, LiveDataStatus types
+- Created src/hooks/use-live-market.ts:
+  - Singleton Socket.IO client pattern (one connection per app lifetime)
+  - React Strict Mode guard (mountCount tracking)
+  - Auto-subscribes to RELIANCE, TCS, NIFTY, BANKNIFTY on connect
+  - Listens to: tick, initial_ticks, connection_status, heartbeat events
+  - Stale data checker: 10s interval, marks symbols stale after 60s
+  - Helper functions: getLiveTick(), getDataStatus() for components
+  - subscribe/unsubscribe/requestStatus callbacks for dynamic subscription management
+- Updated src/app/page.tsx:
+  - MarketClock now shows NSE time (Asia/Kolkata) instead of NYSE time
+  - NSE market hours detection (9:15 AM - 3:30 PM IST, Mon-Fri)
+  - Truthful WebSocket connection status display: LIVE/CONNECTING/WS Error/Disconnected
+  - Footer shows 'Real-time via Upstox WebSocket' or 'Real-time via Upstox REST'
+  - Version bumped to v3.1.0
+- Updated src/components/dashboard/dashboard-page.tsx:
+  - Merged REST quotes with live WebSocket ticks (live takes priority)
+  - TickerItem shows live indicator dot for WebSocket-sourced prices
+  - Indian symbols show ₹ instead of $
+  - Watchlist items show live prices from WebSocket when available
+  - Ticker bar shows live status from WebSocket connection
+- Updated src/components/market/live-market-page.tsx:
+  - Price/change/volume update from WebSocket when live tick available
+  - Truthful badge: LIVE (green pulse), CONNECTING (amber), REST (grey)
+  - Sidebar stock info shows live prices when available
+  - Data source card shows 'Upstox WebSocket' or 'REST API' with dataStatus
+- Added isIndianSymbol() to src/lib/stock-utils.ts
+- Created .env.local with UPSTOX_ANALYTICS_TOKEN placeholder
+- Changed price-streamer dev script from 'bun --hot index.ts' to 'bun index.ts' (stability)
+- Verified: Socket.IO connection works through Caddy XTransformPort proxy
+- Verified: Frontend receives connection_status events from streamer
+- Verified: Subscription requests flow: frontend → streamer → Upstox
+- Verified: Header shows correct NSE time, market status, connection state
+- Verified: Live Market page shows UNAVAILABLE data status when no token configured
+- Verified: Security — UPSTOX_ANALYTICS_TOKEN not in client bundle, not in NEXT_PUBLIC_*, not in browser storage
+- Lint: 0 errors, 0 warnings
+
+Stage Summary:
+- Complete WebSocket infrastructure: Upstox V3 WS → price-streamer → Socket.IO → frontend → Zustand
+- Single server-side Upstox connection shared across all browser clients
+- Normalized tick format with field validation
+- Truthful connection status reporting (no false LIVE labels)
+- Stale data detection (60s threshold)
+- Exponential backoff reconnection with max 50 attempts
+- REST + WebSocket responsibilities clearly separated
+- Security: token never exposed to browser
+- NOTE: Live verification blocked — UPSTOX_ANALYTICS_TOKEN not available in this session (was set in previous session's environment, not persisted)

@@ -5,9 +5,10 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { AppSidebar } from '@/components/sidebar/app-sidebar';
 import { useAppStore, type PageId } from '@/lib/store';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Clock, Wifi, Radio } from 'lucide-react';
+import { Clock, Wifi, Radio, WifiOff, Loader2 } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
 import { LoadingSpinner } from '@/components/shared/animated-counter';
+import { useLiveMarket } from '@/hooks/use-live-market';
 
 const DashboardPage = dynamic(() => import('@/components/dashboard/dashboard-page').then(m => ({ default: m.DashboardPage })), { loading: () => <PageLoading />, ssr: false });
 const LiveMarketPage = dynamic(() => import('@/components/market/live-market-page').then(m => ({ default: m.LiveMarketPage })), { loading: () => <PageLoading />, ssr: false });
@@ -49,13 +50,13 @@ function PageLoading() {
 
 function MarketClock() {
   const [time, setTime] = useState('');
-  const { isLive } = useAppStore();
+  const { wsConnectionStatus, liveTicks, staleSymbols, subscribedWsSymbols } = useAppStore();
 
   useEffect(() => {
     const update = () => {
       const now = new Date();
       const options: Intl.DateTimeFormatOptions = {
-        timeZone: 'America/New_York',
+        timeZone: 'Asia/Kolkata',
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
@@ -68,30 +69,54 @@ function MarketClock() {
     return () => clearInterval(interval);
   }, []);
 
+  // NSE market hours: 9:15 AM – 3:30 PM IST, Mon–Fri
   const now = new Date();
   const isWeekday = now.getDay() >= 1 && now.getDay() <= 5;
-  const nyHour = parseInt(
-    now.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false })
-  );
-  const isMarketHours = isWeekday && nyHour >= 9 && nyHour < 16;
+  const istHourMin = now.toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const [istH, istM] = istHourMin.split(':').map(Number);
+  const istTotalMin = istH * 60 + istM;
+  const nseOpen = 9 * 60 + 15;
+  const nseClose = 15 * 60 + 30;
+  const isMarketHours = isWeekday && istTotalMin >= nseOpen && istTotalMin <= nseClose;
+
+  // Determine live data status truthfully
+  const hasLiveTicks = subscribedWsSymbols.length > 0 &&
+    subscribedWsSymbols.some((s) => liveTicks[s] && !staleSymbols.includes(s));
+  const isActuallyLive = wsConnectionStatus === 'CONNECTED' && hasLiveTicks;
 
   return (
     <div className="flex items-center gap-4 text-xs">
-      {isLive ? (
+      {/* WebSocket Connection Status */}
+      {isActuallyLive ? (
         <div className="flex items-center gap-1.5 text-emerald-400">
           <Radio className="w-3 h-3 animate-pulse" />
-          <span className="font-semibold">LIVE DATA</span>
-          <span className="text-[9px] text-slate-500 font-normal">via Web AI</span>
+          <span className="font-semibold">LIVE</span>
+          <span className="text-[9px] text-slate-500 font-normal">Upstox WS</span>
+        </div>
+      ) : wsConnectionStatus === 'CONNECTING' || wsConnectionStatus === 'RECONNECTING' ? (
+        <div className="flex items-center gap-1.5 text-amber-400">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          <span>Connecting...</span>
+        </div>
+      ) : wsConnectionStatus === 'ERROR' ? (
+        <div className="flex items-center gap-1.5 text-red-400">
+          <WifiOff className="w-3 h-3" />
+          <span>WS Error</span>
         </div>
       ) : (
         <div className="flex items-center gap-1.5 text-slate-500">
           <Wifi className="w-3 h-3" />
-          <span>Connecting...</span>
+          <span>Disconnected</span>
         </div>
       )}
       <div className="flex items-center gap-1.5 text-slate-500">
         <Clock className="w-3 h-3" />
-        <span>NYSE {time}</span>
+        <span>NSE {time}</span>
       </div>
       <div
         className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
@@ -105,10 +130,13 @@ function MarketClock() {
 }
 
 export default function Home() {
-  const { activePage, setRealQuotes, setMarketOverview, setIsLive, isLive } = useAppStore();
+  const { activePage, setRealQuotes, setMarketOverview, setIsLive, isLive, liveTicks, wsConnectionStatus } = useAppStore();
   const ActiveComponent = pageComponents[activePage];
 
-  // Fetch real-time market data on mount
+  // Initialize WebSocket connection to price-streamer
+  useLiveMarket();
+
+  // Fetch real-time market data on mount (REST — initial data)
   const fetchMarketData = useCallback(async () => {
     try {
       const res = await fetch('/api/market-overview');
@@ -132,10 +160,14 @@ export default function Home() {
 
   useEffect(() => {
     fetchMarketData();
-    // Refresh every 5 minutes
+    // Refresh every 5 minutes (REST fallback for overview data)
     const interval = setInterval(fetchMarketData, 300_000);
     return () => clearInterval(interval);
   }, [fetchMarketData]);
+
+  // Determine effective isLive: REST data OR WebSocket connected with live ticks
+  const hasWsLive = wsConnectionStatus === 'CONNECTED' && Object.keys(liveTicks).length > 0;
+  const effectiveLive = isLive || hasWsLive;
 
   return (
     <div className="flex min-h-screen">
@@ -147,7 +179,7 @@ export default function Home() {
             <h2 className="text-sm font-semibold text-slate-300 capitalize">
               {activePage.replace(/-/g, ' ')}
             </h2>
-            <span className="text-[10px] text-slate-600 font-mono">v3.0.0</span>
+            <span className="text-[10px] text-slate-600 font-mono">v3.1.0</span>
           </div>
           <MarketClock />
         </header>
@@ -175,8 +207,14 @@ export default function Home() {
         <footer className="h-10 border-t border-white/5 flex items-center justify-between px-6 text-[11px] text-slate-600 shrink-0 bg-[#0a0e1a]/80 backdrop-blur-xl">
           <span>&copy; 2025 MarketLens AI &mdash; Intelligent Stock Analytics</span>
           <span className="flex items-center gap-1">
-            {isLive ? 'Real-time via Web AI + LLM' : 'Connecting...'}
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
+            {effectiveLive ? (
+              <>
+                {hasWsLive ? 'Real-time via Upstox WebSocket' : 'Real-time via Upstox REST'}
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
+              </>
+            ) : (
+              'Connecting...'
+            )}
           </span>
         </footer>
       </div>
