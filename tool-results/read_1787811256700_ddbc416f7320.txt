@@ -1,0 +1,840 @@
+     1→     1→// Real-time AI Service — z-ai-web-dev-sdk backend
+     2→     2→// ALL data is real. NO mock, NO fake, NO generated, NO fallback dummy data.
+     3→     3→// If data cannot be fetched, functions return null.
+     4→     4→
+     5→     5→import ZAI from 'z-ai-web-dev-sdk';
+     6→     6→import type { OHLCV } from './stock-utils';
+     7→     7→
+     8→     8→// ── In-memory Cache ──────────────────────────────────────────────
+     9→     9→interface CacheEntry<T> {
+    10→    10→  data: T;
+    11→    11→  timestamp: number;
+    12→    12→}
+    13→    13→
+    14→    14→const cache = new Map<string, CacheEntry<unknown>>();
+    15→    15→
+    16→    16→function getCached<T>(key: string, ttlMs: number): T | null {
+    17→    17→  const entry = cache.get(key);
+    18→    18→  if (entry && Date.now() - entry.timestamp < ttlMs) return entry.data as T;
+    19→    19→  cache.delete(key);
+    20→    20→  return null;
+    21→    21→}
+    22→    22→
+    23→    23→function setCache<T>(key: string, data: T): void {
+    24→    24→  if (cache.size > 300) {
+    25→    25→    const oldest = [...cache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+    26→    26→    for (let i = 0; i < 80; i++) cache.delete(oldest[i][0]);
+    27→    27→  }
+    28→    28→  cache.set(key, { data, timestamp: Date.now() });
+    29→    29→}
+    30→    30→
+    31→    31→// ── ZAI Singleton ───────────────────────────────────────────────
+    32→    32→let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
+    33→    33→
+    34→    34→async function getZAI() {
+    35→    35→  if (!zaiInstance) zaiInstance = await ZAI.create();
+    36→    36→  return zaiInstance;
+    37→    37→}
+    38→    38→
+    39→    39→// ── Web Search ──────────────────────────────────────────────────
+    40→    40→export interface SearchResult {
+    41→    41→  url: string;
+    42→    42→  name: string;
+    43→    43→  snippet: string;
+    44→    44→  host_name: string;
+    45→    45→  rank: number;
+    46→    46→  date: string;
+    47→    47→  favicon: string;
+    48→    48→}
+    49→    49→
+    50→    50→export async function webSearch(
+    51→    51→  query: string,
+    52→    52→  options?: { num?: number; recencyDays?: number; cacheTtlMs?: number }
+    53→    53→): Promise<SearchResult[]> {
+    54→    54→  const { num = 8, recencyDays, cacheTtlMs = 300_000 } = options || {};
+    55→    55→  const cacheKey = `search:${query}:${num}:${recencyDays || 'all'}`;
+    56→    56→
+    57→    57→  const cached = getCached<SearchResult[]>(cacheKey, cacheTtlMs);
+    58→    58→  if (cached) return cached;
+    59→    59→
+    60→    60→  const zai = await getZAI();
+    61→    61→  const args: Record<string, unknown> = { query, num };
+    62→    62→  if (recencyDays) args.recency_days = recencyDays;
+    63→    63→
+    64→    64→  let lastError: Error | null = null;
+    65→    65→  for (let attempt = 0; attempt < 3; attempt++) {
+    66→    66→    try {
+    67→    67→      const results = await zai.functions.invoke('web_search', args);
+    68→    68→      const typed = (results as SearchResult[]).map((r, i) => ({ ...r, rank: r.rank ?? i + 1 }));
+    69→    69→      setCache(cacheKey, typed);
+    70→    70→      return typed;
+    71→    71→    } catch (err) {
+    72→    72→      lastError = err as Error;
+    73→    73→      const isRateLimit = (err as Error).message?.includes('429');
+    74→    74→      if (isRateLimit && attempt < 2) {
+    75→    75→        await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+    76→    76→        continue;
+    77→    77→      }
+    78→    78→      throw err;
+    79→    79→    }
+    80→    80→  }
+    81→    81→  throw lastError || new Error('web_search failed after retries');
+    82→    82→}
+    83→    83→
+    84→    84→// ── Web Reader ──────────────────────────────────────────────────
+    85→    85→export async function readPage(url: string, cacheTtlMs = 600_000): Promise<{
+    86→    86→  title: string;
+    87→    87→  html: string;
+    88→    88→  url: string;
+    89→    89→  publishedTime?: string;
+    90→    90→}> {
+    91→    91→  const cacheKey = `page:${url}`;
+    92→    92→  const cached = getCached<{ title: string; html: string; url: string; publishedTime?: string }>(cacheKey, cacheTtlMs);
+    93→    93→  if (cached) return cached;
+    94→    94→
+    95→    95→  const zai = await getZAI();
+    96→    96→  const result = await zai.functions.invoke('page_reader', { url });
+    97→    97→
+    98→    98→  const data = {
+    99→    99→    title: result.data?.title || '',
+   100→   100→    html: result.data?.html || '',
+   101→   101→    url: result.data?.url || url,
+   102→   102→    publishedTime: result.data?.publishedTime || result.data?.publish_time,
+   103→   103→  };
+   104→   104→
+   105→   105→  setCache(cacheKey, data);
+   106→   106→  return data;
+   107→   107→}
+   108→   108→
+   109→   109→// ── LLM Chat ────────────────────────────────────────────────────
+   110→   110→export async function llmChat(
+   111→   111→  systemPrompt: string,
+   112→   112→  userMessage: string,
+   113→   113→  options?: { cacheTtlMs?: number; cacheKey?: string }
+   114→   114→): Promise<string> {
+   115→   115→  const { cacheTtlMs = 600_000, cacheKey } = options || {};
+   116→   116→
+   117→   117→  if (cacheKey) {
+   118→   118→    const cached = getCached<string>(cacheKey, cacheTtlMs);
+   119→   119→    if (cached) return cached;
+   120→   120→  }
+   121→   121→
+   122→   122→  const zai = await getZAI();
+   123→   123→  const completion = await zai.chat.completions.create({
+   124→   124→    messages: [
+   125→   125→      { role: 'assistant', content: systemPrompt },
+   126→   126→      { role: 'user', content: userMessage },
+   127→   127→    ],
+   128→   128→    thinking: { type: 'disabled' },
+   129→   129→  });
+   130→   130→
+   131→   131→  const response = completion.choices[0]?.message?.content || '';
+   132→   132→  if (cacheKey) setCache(cacheKey, response);
+   133→   133→  return response;
+   134→   134→}
+   135→   135→
+   136→   136→// ── Company Name Lookup ─────────────────────────────────────────
+   137→   137→const COMPANY_NAMES: Record<string, string> = {
+   138→   138→  AAPL: 'Apple', TSLA: 'Tesla', MSFT: 'Microsoft', NVDA: 'NVIDIA',
+   139→   139→  GOOG: 'Alphabet Google', META: 'Meta Platforms', AMZN: 'Amazon',
+   140→   140→  INFY: 'Infosys', TCS: 'Tata Consultancy Services', RELIANCE: 'Reliance Industries',
+   141→   141→  JPM: 'JPMorgan Chase', V: 'Visa', WMT: 'Walmart', JNJ: 'Johnson & Johnson',
+   142→   142→  MA: 'Mastercard', PG: 'Procter & Gamble', UNH: 'UnitedHealth Group',
+   143→   143→  HD: 'Home Depot', DIS: 'Walt Disney', NFLX: 'Netflix',
+   144→   144→};
+   145→   145→
+   146→   146→export function getCompanyName(symbol: string): string {
+   147→   147→  return COMPANY_NAMES[symbol.toUpperCase()] || symbol;
+   148→   148→}
+   149→   149→
+   150→   150→// ── Helpers ─────────────────────────────────────────────────────
+   151→   151→function toNum(val: unknown, fallback = 0): number {
+   152→   152→  if (typeof val === 'number') return val;
+   153→   153→  if (typeof val === 'string') {
+   154→   154→    const parsed = parseFloat(val.replace(/[^0-9.\-]/g, ''));
+   155→   155→    return isNaN(parsed) ? fallback : parsed;
+   156→   156→  }
+   157→   157→  return fallback;
+   158→   158→}
+   159→   159→
+   160→   160→function clamp(val: number, min: number, max: number): number {
+   161→   161→  return Math.min(max, Math.max(min, val));
+   162→   162→}
+   163→   163→
+   164→   164→function parseJSON<T>(text: string): T | null {
+   165→   165→  try {
+   166→   166→    const jsonStr = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+   167→   167→    return JSON.parse(jsonStr) as T;
+   168→   168→  } catch {
+   169→   169→    return null;
+   170→   170→  }
+   171→   171→}
+   172→   172→
+   173→   173→// ── Real Stock Quote Fetching ───────────────────────────────────
+   174→   174→export interface RealStockQuote {
+   175→   175→  price: number;
+   176→   176→  change: number;
+   177→   177→  changePercent: number;
+   178→   178→  volume: number;
+   179→   179→  marketCap: number;
+   180→   180→  high52w: number;
+   181→   181→  low52w: number;
+   182→   182→  dayHigh: number;
+   183→   183→  dayLow: number;
+   184→   184→  openPrice: number;
+   185→   185→  previousClose: number;
+   186→   186→  pe: number;
+   187→   187→  eps: number;
+   188→   188→  dividend: number;
+   189→   189→  avgVolume: number;
+   190→   190→  dayRange: string;
+   191→   191→  source: string;
+   192→   192→  fetchedAt: string;
+   193→   193→  name: string;
+   194→   194→  sector: string;
+   195→   195→  industry: string;
+   196→   196→  exchange: string;
+   197→   197→}
+   198→   198→
+   199→   199→export async function fetchRealStockQuote(symbol: string): Promise<RealStockQuote | null> {
+   200→   200→  const cacheKey = `quote:${symbol}`;
+   201→   201→  const cached = getCached<RealStockQuote>(cacheKey, 300_000); // 5 min
+   202→   202→  if (cached) return cached;
+   203→   203→
+   204→   204→  try {
+   205→   205→    const companyName = getCompanyName(symbol);
+   206→   206→    const query = `${symbol} ${companyName} stock price today quote 2025`;
+   207→   207→    const results = await webSearch(query, { num: 5, recencyDays: 1 });
+   208→   208→
+   209→   209→    if (!results.length) return null;
+   210→   210→
+   211→   211→    const snippets = results.slice(0, 5)
+   212→   212→      .map((r, i) => `[${i + 1}] ${r.name}\n${r.snippet}`)
+   213→   213→      .join('\n\n');
+   214→   214→
+   215→   215→    const systemPrompt = `You are a financial data extraction expert. Extract the CURRENT stock quote data from the provided search results.
+   216→   216→Return ONLY a valid JSON object with these exact fields:
+   217→   217→- price: current stock price (number)
+   218→   218→- change: today's dollar change (number, can be negative)
+   219→   219→- changePercent: today's percentage change (number, can be negative)
+   220→   220→- volume: today's trading volume (number)
+   221→   221→- marketCap: market capitalization (number)
+   222→   222→- dayHigh: today's high (number)
+   223→   223→- dayLow: today's low (number)
+   224→   224→- openPrice: today's open (number)
+   225→   225→- previousClose: previous close (number)
+   226→   226→- pe: P/E ratio (number)
+   227→   227→- eps: EPS (number)
+   228→   228→- dividend: annual dividend (number)
+   229→   229→- high52w: 52-week high (number)
+   230→   230→- low52w: 52-week low (number)
+   231→   231→
+   232→   232→If you cannot find a value, use 0. Be as accurate as possible.
+   233→   233→Respond with JSON only, no markdown, no explanation.`;
+   234→   234→
+   235→   235→    const userMessage = `Extract the current stock quote for ${symbol} (${companyName}) from these search results:\n\n${snippets}`;
+   236→   236→    const llmResponse = await llmChat(systemPrompt, userMessage, { cacheKey: `quote-llm:${symbol}` });
+   237→   237→
+   238→   238→    const parsed = parseJSON<Record<string, unknown>>(llmResponse);
+   239→   239→    if (!parsed) return null;
+   240→   240→
+   241→   241→    const quote: RealStockQuote = {
+   242→   242→      price: toNum(parsed.price),
+   243→   243→      change: toNum(parsed.change),
+   244→   244→      changePercent: toNum(parsed.changePercent),
+   245→   245→      volume: toNum(parsed.volume),
+   246→   246→      marketCap: toNum(parsed.marketCap),
+   247→   247→      high52w: toNum(parsed.high52w),
+   248→   248→      low52w: toNum(parsed.low52w),
+   249→   249→      dayHigh: toNum(parsed.dayHigh),
+   250→   250→      dayLow: toNum(parsed.dayLow),
+   251→   251→      openPrice: toNum(parsed.openPrice),
+   252→   252→      previousClose: toNum(parsed.previousClose),
+   253→   253→      pe: toNum(parsed.pe),
+   254→   254→      eps: toNum(parsed.eps),
+   255→   255→      dividend: toNum(parsed.dividend),
+   256→   256→      avgVolume: 0,
+   257→   257→      dayRange: parsed.dayRange ? String(parsed.dayRange) : '',
+   258→   258→      source: results[0]?.host_name || 'web-search',
+   259→   259→      fetchedAt: new Date().toISOString(),
+   260→   260→      name: companyName,
+   261→   261→      sector: '',
+   262→   262→      industry: '',
+   263→   263→      exchange: '',
+   264→   264→    };
+   265→   265→
+   266→   266→    if (quote.price <= 0) return null;
+   267→   267→
+   268→   268→    setCache(cacheKey, quote);
+   269→   269→    return quote;
+   270→   270→  } catch (error) {
+   271→   271→    console.error(`Failed to fetch real quote for ${symbol}:`, error);
+   272→   272→    return null;
+   273→   273→  }
+   274→   274→}
+   275→   275→
+   276→   276→// ── Real Historical OHLCV Data Fetching ─────────────────────────
+   277→   277→export async function fetchHistoricalOHLCV(
+   278→   278→  symbol: string,
+   279→   279→  days: number = 90
+   280→   280→): Promise<OHLCV[] | null> {
+   281→   281→  const cacheKey = `ohlcv:${symbol}:${days}`;
+   282→   282→  const cached = getCached<OHLCV[]>(cacheKey, 600_000); // 10 min
+   283→   283→  if (cached) return cached;
+   284→   284→
+   285→   285→  try {
+   286→   286→    const companyName = getCompanyName(symbol);
+   287→   287→
+   288→   288→    // Strategy 1: Try to read Yahoo Finance history page
+   289→   289→    const yahooUrl = `https://finance.yahoo.com/quote/${symbol}/history/`;
+   290→   290→    let pageData: { html: string; title: string } | null = null;
+   291→   291→
+   292→   292→    try {
+   293→   293→      pageData = await readPage(yahooUrl, 300_000);
+   294→   294→    } catch {
+   295→   295→      // Yahoo may block, fall through to search-based approach
+   296→   296→    }
+   297→   297→
+   298→   298→    if (pageData?.html && pageData.html.length > 500) {
+   299→   299→      // Use LLM to parse the HTML table into OHLCV data
+   300→   300→      const systemPrompt = `You are a financial data parser. Extract historical stock price data from the provided HTML.
+   301→   301→Return ONLY a valid JSON array of objects with exact fields: date, open, high, low, close, volume.
+   302→   302→- date format: YYYY-MM-DD
+   303→   303→- all values are numbers
+   304→   304→- Include the most recent ${days} trading days
+   305→   305→- Sort chronologically from oldest to newest
+   306→   306→- If data is not available in the HTML, return an empty array []
+   307→   307→Respond with JSON only, no markdown.`;
+   308→   308→
+   309→   309→      const htmlSnippet = pageData.html.substring(0, 8000);
+   310→   310→      const userMessage = `Extract OHLCV data for ${symbol} from this HTML:\n${htmlSnippet}`;
+   311→   311→
+   312→   312→      const llmResponse = await llmChat(systemPrompt, userMessage, {
+   313→   313→        cacheKey: `ohlcv-yahoo:${symbol}:${days}`,
+   314→   314→        cacheTtlMs: 600_000,
+   315→   315→      });
+   316→   316→
+   317→   317→      const parsed = parseJSON<OHLCV[]>(llmResponse);
+   318→   318→      if (parsed && parsed.length >= 20) {
+   319→   319→        setCache(cacheKey, parsed);
+   320→   320→        return parsed;
+   321→   321→      }
+   322→   322→    }
+   323→   323→
+   324→   324→    // Strategy 2: Search for historical price data
+   325→   325→    const searchQuery = `${symbol} ${companyName} stock price history last ${days} days OHLCV data 2025`;
+   326→   326→    const searchResults = await webSearch(searchQuery, { num: 8, recencyDays: 7 });
+   327→   327→
+   328→   328→    if (searchResults.length > 0) {
+   329→   329→      // Try reading the most promising URL
+   330→   330→      for (const result of searchResults.slice(0, 3)) {
+   331→   331→        if (result.url.includes('finance.yahoo') || result.url.includes('google.com/finance') || result.url.includes('tradingview')) {
+   332→   332→          try {
+   333→   333→            const page = await readPage(result.url, 300_000);
+   334→   334→            if (page.html && page.html.length > 1000) {
+   335→   335→              const systemPrompt = `Extract historical daily stock OHLCV data from the HTML.
+   336→   336→Return JSON array: [{"date":"YYYY-MM-DD","open":num,"high":num,"low":num,"close":num,"volume":num}]
+   337→   337→Most recent ${days} days. Chronological order. If not extractable, return [].`;
+   338→   338→              const snippet = page.html.substring(0, 10000);
+   339→   339→              const resp = await llmChat(systemPrompt, `Extract ${symbol} OHLCV from:\n${snippet}`, {
+   340→   340→                cacheKey: `ohlcv-page:${symbol}:${days}`,
+   341→   341→              });
+   342→   342→              const data = parseJSON<OHLCV[]>(resp);
+   343→   343→              if (data && data.length >= 20) {
+   344→   344→                setCache(cacheKey, data);
+   345→   345→                return data;
+   346→   346→              }
+   347→   347→            }
+   348→   348→          } catch {
+   349→   349→            continue;
+   350→   350→          }
+   351→   351→        }
+   352→   352→      }
+   353→   353→
+   354→   354→      // Strategy 3: Use LLM with search snippets to reconstruct recent prices
+   355→   355→      const snippets = searchResults.slice(0, 5).map((r) => `${r.name}: ${r.snippet}`).join('\n');
+   356→   356→      const systemPrompt = `Based on the search results about ${symbol} stock, provide recent daily closing prices.
+   357→   357→Return ONLY a JSON array of objects with: date, open, high, low, close, volume.
+   358→   358→Provide at least 30 recent trading days. Use your best knowledge combined with the search context.
+   359→   359→All values must be numbers. Dates in YYYY-MM-DD format. Chronological order.
+   360→   360→If you cannot provide real data, return an empty array [].`;
+   361→   361→
+   362→   362→      const resp = await llmChat(systemPrompt, `${symbol} recent price data from search:\n${snippets}`, {
+   363→   363→        cacheKey: `ohlcv-llm:${symbol}:${days}`,
+   364→   364→      });
+   365→   365→      const data = parseJSON<OHLCV[]>(resp);
+   366→   366→      if (data && data.length >= 20) {
+   367→   367→        setCache(cacheKey, data);
+   368→   368→        return data;
+   369→   369→      }
+   370→   370→    }
+   371→   371→
+   372→   372→    return null; // Cannot fetch real data
+   373→   373→  } catch (error) {
+   374→   374→    console.error(`Failed to fetch historical OHLCV for ${symbol}:`, error);
+   375→   375→    return null;
+   376→   376→  }
+   377→   377→}
+   378→   378→
+   379→   379→// ── Real News Fetching + LLM Sentiment ──────────────────────────
+   380→   380→export interface RealNewsArticle {
+   381→   381→  title: string;
+   382→   382→  url: string;
+   383→   383→  source: string;
+   384→   384→  snippet: string;
+   385→   385→  date: string;
+   386→   386→  sentiment: 'positive' | 'negative' | 'neutral';
+   387→   387→  sentimentScore: number;
+   388→   388→  positivePct: number;
+   389→   389→  negativePct: number;
+   390→   390→  neutralPct: number;
+   391→   391→}
+   392→   392→
+   393→   393→export async function fetchRealNews(symbol: string): Promise<{
+   394→   394→  articles: RealNewsArticle[];
+   395→   395→  summary: {
+   396→   396→    overallScore: number;
+   397→   397→    positivePct: number;
+   398→   398→    negativePct: number;
+   399→   399→    neutralPct: number;
+   400→   400→    positiveCount: number;
+   401→   401→    negativeCount: number;
+   402→   402→    neutralCount: number;
+   403→   403→    trending: string[];
+   404→   404→  };
+   405→   405→} | null> {
+   406→   406→  const cacheKey = `news:${symbol}`;
+   407→   407→  const cached = getCached<ReturnType<typeof fetchRealNews>>(cacheKey, 600_000);
+   408→   408→  if (cached) return cached;
+   409→   409→
+   410→   410→  try {
+   411→   411→    const companyName = getCompanyName(symbol);
+   412→   412→    const query = `${symbol} ${companyName} stock news today latest`;
+   413→   413→    const results = await webSearch(query, { num: 10, recencyDays: 7 });
+   414→   414→
+   415→   415→    if (!results.length) return null;
+   416→   416→
+   417→   417→    const articlesText = results.slice(0, 10)
+   418→   418→      .map((r, i) => `[${i + 1}] Title: ${r.name}\nSource: ${r.host_name}\nSnippet: ${r.snippet}\nDate: ${r.date || 'Recent'}`)
+   419→   419→      .join('\n\n');
+   420→   420→
+   421→   421→    const systemPrompt = `You are a financial sentiment analysis AI (FinBERT-class). Analyze the sentiment of each news article about ${symbol} stock.
+   422→   422→
+   423→   423→For EACH article, determine:
+   424→   424→- sentiment: "positive", "negative", or "neutral"
+   425→   425→- score: 0-100 (where >60 = positive, <40 = negative, 40-60 = neutral)
+   426→   426→- positivePct: confidence for positive sentiment (0-100)
+   427→   427→- negativePct: confidence for negative sentiment (0-100)
+   428→   428→- neutralPct: confidence for neutral sentiment (0-100)
+   429→   429→
+   430→   430→Also identify 4-6 trending topics/themes across all articles.
+   431→   431→
+   432→   432→Return ONLY a valid JSON object:
+   433→   433→{
+   434→   434→  "articles": [{ "index": 1, "sentiment": "positive", "score": 72, "positivePct": 65, "negativePct": 15, "neutralPct": 20 }],
+   435→   435→  "trending": ["Topic 1", "Topic 2"]
+   436→   436→}
+   437→   437→
+   438→   438→Analyze ALL ${Math.min(results.length, 10)} articles. Respond with JSON only.`;
+   439→   439→
+   440→   440→    const llmResponse = await llmChat(systemPrompt, `Analyze sentiment for these news articles about ${symbol}:\n\n${articlesText}`);
+   441→   441→
+   442→   442→    const parsed = parseJSON<{
+   443→   443→      articles: Array<{ index: number; sentiment: string; score: number; positivePct: number; negativePct: number; neutralPct: number }>;
+   444→   444→      trending: string[];
+   445→   445→    }>(llmResponse);
+   446→   446→
+   447→   447→    if (!parsed) return null;
+   448→   448→
+   449→   449→    const articles: RealNewsArticle[] = results.slice(0, 10).map((r, i) => {
+   450→   450→      const analysis = parsed.articles?.find((a) => a.index === i + 1);
+   451→   451→      return {
+   452→   452→        title: r.name,
+   453→   453→        url: r.url,
+   454→   454→        source: r.host_name,
+   455→   455→        snippet: r.snippet,
+   456→   456→        date: r.date || 'Recent',
+   457→   457→        sentiment: (analysis?.sentiment || 'neutral') as 'positive' | 'negative' | 'neutral',
+   458→   458→        sentimentScore: analysis?.score ?? 50,
+   459→   459→        positivePct: analysis?.positivePct ?? 33,
+   460→   460→        negativePct: analysis?.negativePct ?? 33,
+   461→   461→        neutralPct: analysis?.neutralPct ?? 34,
+   462→   462→      };
+   463→   463→    });
+   464→   464→
+   465→   465→    const positiveCount = articles.filter((a) => a.sentiment === 'positive').length;
+   466→   466→    const negativeCount = articles.filter((a) => a.sentiment === 'negative').length;
+   467→   467→    const neutralCount = articles.filter((a) => a.sentiment === 'neutral').length;
+   468→   468→    const avgPositive = articles.reduce((s, a) => s + a.positivePct, 0) / articles.length;
+   469→   469→    const avgNegative = articles.reduce((s, a) => s + a.negativePct, 0) / articles.length;
+   470→   470→    const avgNeutral = 100 - avgPositive - avgNegative;
+   471→   471→
+   472→   472→    const result = {
+   473→   473→      articles,
+   474→   474→      summary: {
+   475→   475→        overallScore: Math.round(50 + (avgPositive - avgNegative) * 0.5),
+   476→   476→        positivePct: Math.round(avgPositive),
+   477→   477→        negativePct: Math.round(avgNegative),
+   478→   478→        neutralPct: Math.round(Math.max(avgNeutral, 0)),
+   479→   479→        positiveCount,
+   480→   480→        negativeCount,
+   481→   481→        neutralCount,
+   482→   482→        trending: parsed.trending || [],
+   483→   483→      },
+   484→   484→    };
+   485→   485→
+   486→   486→    setCache(cacheKey, result);
+   487→   487→    return result;
+   488→   488→  } catch (error) {
+   489→   489→    console.error(`Failed to fetch real news for ${symbol}:`, error);
+   490→   490→    return null;
+   491→   491→  }
+   492→   492→}
+   493→   493→
+   494→   494→// ── Real AI Prediction (LLM-based, NO fake metrics) ─────────────
+   495→   495→export interface RealPrediction {
+   496→   496→  bullishProbability: number;
+   497→   497→  bearishProbability: number;
+   498→   498→  volatility: number;
+   499→   499→  predictedPrice: number;
+   500→   500→  upperBound: number;
+   501→   501→  lowerBound: number;
+   502→   502→  confidence: number;
+   503→   503→  riskLevel: string;
+   504→   504→  recommendation: string;
+   505→   505→  analysis: string;
+   506→   506→  keyFactors: string[];
+   507→   507→  supportLevels: number[];
+   508→   508→  resistanceLevels: number[];
+   509→   509→}
+   510→   510→
+   511→   511→export async function fetchRealPrediction(
+   512→   512→  symbol: string,
+   513→   513→  currentPrice: number,
+   514→   514→  indicators: {
+   515→   515→    rsi?: number;
+   516→   516→    macd?: number;
+   517→   517→    macdSignal?: number;
+   518→   518→    sma20?: number;
+   519→   519→    sma50?: number;
+   520→   520→    ema12?: number;
+   521→   521→    ema26?: number;
+   522→   522→    bbUpper?: number;
+   523→   523→    bbMiddle?: number;
+   524→   524→    bbLower?: number;
+   525→   525→    atr?: number;
+   526→   526→    adx?: number;
+   527→   527→  }
+   528→   528→): Promise<RealPrediction | null> {
+   529→   529→  const cacheKey = `prediction:${symbol}:${currentPrice.toFixed(2)}`;
+   530→   530→  const cached = getCached<RealPrediction>(cacheKey, 900_000); // 15 min
+   531→   531→  if (cached) return cached;
+   532→   532→
+   533→   533→  try {
+   534→   534→    const companyName = getCompanyName(symbol);
+   535→   535→
+   536→   536→    // Fetch recent news for context
+   537→   537→    const [newsResults, techResults] = await Promise.all([
+   538→   538→      webSearch(`${symbol} ${companyName} stock analysis prediction`, { num: 5, recencyDays: 3 }).catch(() => []),
+   539→   539→      webSearch(`${symbol} stock technical analysis RSI MACD support resistance`, { num: 3 }).catch(() => []),
+   540→   540→    ]);
+   541→   541→
+   542→   542→    const newsContext = newsResults.slice(0, 5).map((r) => `- ${r.name}: ${r.snippet}`).join('\n');
+   543→   543→    const techContext = techResults.slice(0, 3).map((r) => `- ${r.snippet}`).join('\n');
+   544→   544→
+   545→   545→    const systemPrompt = `You are an advanced AI stock analyst. Analyze the provided data and provide a real prediction.
+   546→   546→
+   547→   547→CRITICAL: Do NOT generate fake metrics, model performance numbers, or historical accuracy data.
+   548→   548→Only provide analysis based on the actual data given to you.
+   549→   549→
+   550→   550→Return ONLY valid JSON:
+   551→   551→{
+   552→   552→  "bullishProbability": <number 0-100>,
+   553→   553→  "bearishProbability": <number 0-100, must equal 100 - bullishProbability>,
+   554→   554→  "volatility": <number, estimated daily volatility %>,
+   555→   555→  "predictedPrice": <number, predicted close for next trading day>,
+   556→   556→  "upperBound": <number, upper confidence bound>,
+   557→   557→  "lowerBound": <number, lower confidence bound>,
+   558→   558→  "confidence": <number 40-85, your confidence in this prediction based on available data>,
+   559→   559→  "riskLevel": "Low" | "Medium" | "High",
+   560→   560→  "recommendation": "BUY" | "HOLD" | "SELL",
+   561→   561→  "analysis": "<string, 4-6 sentence professional analysis referencing specific technical levels and news events>",
+   562→   562→  "keyFactors": ["<factor1>", "<factor2>", "<factor3>", "<factor4>"],
+   563→   563→  "supportLevels": [<number>, <number>],
+   564→   564→  "resistanceLevels": [<number>, <number>]
+   565→   565→}
+   566→   566→
+   567→   567→Be realistic. The predicted price should be within 3% of current price. Reference REAL news events and REAL technical levels.`;
+   568→   568→
+   569→   569→    const userMessage = `Analyze ${symbol} (${companyName}):
+   570→   570→
+   571→   571→Current Data:
+   572→   572→- Price: $${currentPrice.toFixed(2)}
+   573→   573→- RSI(14): ${indicators.rsi?.toFixed(1) || 'N/A'}
+   574→   574→- MACD: ${indicators.macd?.toFixed(2) || 'N/A'}
+   575→   575→- MACD Signal: ${indicators.macdSignal?.toFixed(2) || 'N/A'}
+   576→   576→- SMA(20): $${indicators.sma20?.toFixed(2) || 'N/A'}
+   577→   577→- SMA(50): $${indicators.sma50?.toFixed(2) || 'N/A'}
+   578→   578→- EMA(12): $${indicators.ema12?.toFixed(2) || 'N/A'}
+   579→   579→- EMA(26): $${indicators.ema26?.toFixed(2) || 'N/A'}
+   580→   580→- Bollinger Upper: $${indicators.bbUpper?.toFixed(2) || 'N/A'}
+   581→   581→- Bollinger Lower: $${indicators.bbLower?.toFixed(2) || 'N/A'}
+   582→   582→- ATR(14): ${indicators.atr?.toFixed(2) || 'N/A'}
+   583→   583→- ADX: ${indicators.adx?.toFixed(1) || 'N/A'}
+   584→   584→- Timestamp: ${new Date().toISOString()}
+   585→   585→
+   586→   586→Recent News:
+   587→   587→${newsContext || 'No recent news available'}
+   588→   588→
+   589→   589→Technical Context:
+   590→   590→${techContext || 'No technical context available'}
+   591→   591→
+   592→   592→Provide your prediction.`;
+   593→   593→
+   594→   594→    const llmResponse = await llmChat(systemPrompt, userMessage);
+   595→   595→    const parsed = parseJSON<Record<string, unknown>>(llmResponse);
+   596→   596→    if (!parsed) return null;
+   597→   597→
+   598→   598→    const bullish = clamp(toNum(parsed.bullishProbability, 50), 10, 90);
+   599→   599→    const predPrice = clamp(toNum(parsed.predictedPrice, currentPrice), currentPrice * 0.95, currentPrice * 1.05);
+   600→   600→    const vol = clamp(toNum(parsed.volatility, 2.5), 0.5, 8);
+   601→   601→
+   602→   602→    const result: RealPrediction = {
+   603→   603→      bullishProbability: Math.round(bullish),
+   604→   604→      bearishProbability: Math.round(100 - bullish),
+   605→   605→      volatility: parseFloat(vol.toFixed(2)),
+   606→   606→      predictedPrice: parseFloat(predPrice.toFixed(2)),
+   607→   607→      upperBound: parseFloat(clamp(toNum(parsed.upperBound, predPrice * 1.015), predPrice, predPrice * 1.05).toFixed(2)),
+   608→   608→      lowerBound: parseFloat(clamp(toNum(parsed.lowerBound, predPrice * 0.985), predPrice * 0.95, predPrice).toFixed(2)),
+   609→   609→      confidence: Math.round(clamp(toNum(parsed.confidence, 65), 40, 85)),
+   610→   610→      riskLevel: vol > 4 ? 'High' : vol > 2.5 ? 'Medium' : 'Low',
+   611→   611→      recommendation: (parsed.recommendation as string) || (bullish > 55 ? 'BUY' : bullish < 45 ? 'SELL' : 'HOLD'),
+   612→   612→      analysis: (parsed.analysis as string) || '',
+   613→   613→      keyFactors: Array.isArray(parsed.keyFactors) ? parsed.keyFactors.map(String) : [],
+   614→   614→      supportLevels: Array.isArray(parsed.supportLevels) ? parsed.supportLevels.map(Number).filter((n) => n > 0) : [],
+   615→   615→      resistanceLevels: Array.isArray(parsed.resistanceLevels) ? parsed.resistanceLevels.map(Number).filter((n) => n > 0) : [],
+   616→   616→    };
+   617→   617→
+   618→   618→    setCache(cacheKey, result);
+   619→   619→    return result;
+   620→   620→  } catch (error) {
+   621→   621→    console.error(`Failed to fetch prediction for ${symbol}:`, error);
+   622→   622→    return null;
+   623→   623→  }
+   624→   624→}
+   625→   625→
+   626→   626→// ── Market Overview ──────────────────────────────────────────────
+   627→   627→export async function fetchMarketOverview(): Promise<{
+   628→   628→  fearGreedIndex: number;
+   629→   629→  marketTrend: string;
+   630→   630→  topGainers: Array<{ symbol: string; name: string; change: number; price: number }>;
+   631→   631→  topLosers: Array<{ symbol: string; name: string; change: number; price: number }>;
+   632→   632→  mostActive: Array<{ symbol: string; name: string; volume: number; price: number }>;
+   633→   633→  marketStatus: string;
+   634→   634→} | null> {
+   635→   635→  const cacheKey = 'market-overview';
+   636→   636→  const cached = getCached<ReturnType<typeof fetchMarketOverview>>(cacheKey, 600_000);
+   637→   637→  if (cached) return cached;
+   638→   638→
+   639→   639→  try {
+   640→   640→    const results = await webSearch('stock market today top gainers losers most active fear greed index 2025', {
+   641→   641→      num: 8,
+   642→   642→      recencyDays: 1,
+   643→   643→    });
+   644→   644→
+   645→   645→    if (!results.length) return null;
+   646→   646→
+   647→   647→    const snippets = results.slice(0, 5).map((r) => `${r.name}: ${r.snippet}`).join('\n');
+   648→   648→
+   649→   649→    const systemPrompt = `You are a financial data analyst. Extract market overview data from the search results.
+   650→   650→Return ONLY valid JSON:
+   651→   651→{
+   652→   652→  "fearGreedIndex": <number 0-100>,
+   653→   653→  "marketTrend": "Bullish" | "Bearish" | "Neutral" | "Volatile",
+   654→   654→  "topGainers": [{"symbol": "SYM", "name": "Company Name", "change": <percent number>, "price": <number>}],
+   655→   655→  "topLosers": [{"symbol": "SYM", "name": "Company Name", "change": <percent number>, "price": <number>}],
+   656→   656→  "mostActive": [{"symbol": "SYM", "name": "Company Name", "volume": <number>, "price": <number>}],
+   657→   657→  "marketStatus": "Open" | "Closed" | "Pre-Market" | "After Hours"
+   658→   658→}
+   659→   659→Provide up to 5 each for gainers, losers, and most active. If unsure, return empty arrays.
+   660→   660→Respond with JSON only.`;
+   661→   661→
+   662→   662→    const llmResponse = await llmChat(systemPrompt, `Extract market data:\n${snippets}`);
+   663→   663→    const parsed = parseJSON<Record<string, unknown>>(llmResponse);
+   664→   664→    if (!parsed) return null;
+   665→   665→
+   666→   666→    const result = {
+   667→   667→      fearGreedIndex: clamp(toNum(parsed.fearGreedIndex, 50), 0, 100),
+   668→   668→      marketTrend: (parsed.marketTrend as string) || 'Neutral',
+   669→   669→      topGainers: (parsed.topGainers as Array<{ symbol: string; name: string; change: number; price: number }>) || [],
+   670→   670→      topLosers: (parsed.topLosers as Array<{ symbol: string; name: string; change: number; price: number }>) || [],
+   671→   671→      mostActive: (parsed.mostActive as Array<{ symbol: string; name: string; volume: number; price: number }>) || [],
+   672→   672→      marketStatus: (parsed.marketStatus as string) || 'Closed',
+   673→   673→    };
+   674→   674→
+   675→   675→    setCache(cacheKey, result);
+   676→   676→    return result;
+   677→   677→  } catch (error) {
+   678→   678→    console.error('Failed to fetch market overview:', error);
+   679→   679→    return null;
+   680→   680→  }
+   681→   681→}
+   682→   682→
+   683→   683→// ── AI Assistant Chat ────────────────────────────────────────────
+   684→   684→export async function fetchAIChatResponse(
+   685→   685→  symbol: string,
+   686→   686→  userQuestion: string,
+   687→   687→  context: {
+   688→   688→    currentPrice: number;
+   689→   689→    indicators: Record<string, number | undefined>;
+   690→   690→    recentNews: string;
+   691→   691→  }
+   692→   692→): Promise<string | null> {
+   693→   693→  try {
+   694→   694→    const companyName = getCompanyName(symbol);
+   695→   695→    const systemPrompt = `You are an expert AI stock market assistant for MarketLens AI. You help users make informed investment decisions.
+   696→   696→
+   697→   697→You have access to real-time data for ${symbol} (${companyName}):
+   698→   698→- Current Price: $${context.currentPrice.toFixed(2)}
+   699→   699→- RSI(14): ${context.indicators.rsi?.toFixed(1) || 'N/A'}
+   700→   700→- MACD: ${context.indicators.macd?.toFixed(2) || 'N/A'}
+   701→   701→- SMA(20): $${context.indicators.sma20?.toFixed(2) || 'N/A'}
+   702→   702→- SMA(50): $${context.indicators.sma50?.toFixed(2) || 'N/A'}
+   703→   703→- Bollinger Upper: $${context.indicators.bbUpper?.toFixed(2) || 'N/A'}
+   704→   704→- Bollinger Lower: $${context.indicators.bbLower?.toFixed(2) || 'N/A'}
+   705→   705→- ATR(14): ${context.indicators.atr?.toFixed(2) || 'N/A'}
+   706→   706→
+   707→   707→Recent News Headlines:
+   708→   708→${context.recentNews || 'No recent news available'}
+   709→   709→
+   710→   710→Rules:
+   711→   711→- Base your analysis on REAL data provided above
+   712→   712→- Reference specific technical indicator values
+   713→   713→- Reference specific news events when available
+   714→   714→- Provide actionable but cautious advice
+   715→   715→- Always include a disclaimer that this is not financial advice
+   716→   716→- Be concise but thorough
+   717→   717→- Use markdown formatting for readability`;
+   718→   718→
+   719→   719→    const response = await llmChat(systemPrompt, userQuestion);
+   720→   720→    return response;
+   721→   721→  } catch (error) {
+   722→   722→    console.error('AI Chat failed:', error);
+   723→   723→    return null;
+   724→   724→  }
+   725→   725→}
+   726→   726→
+   727→   727→// ── Stock Search (Autocomplete) ─────────────────────────────────
+   728→   728→export async function searchStocks(query: string): Promise<Array<{ symbol: string; name: string; sector: string; price?: number }>> {
+   729→   729→  if (!query || query.length < 1) return [];
+   730→   730→
+   731→   731→  try {
+   732→   732→    const results = await webSearch(`stock ticker symbol ${query} company`, { num: 5 });
+   733→   733→    return results.slice(0, 5).map((r) => {
+   734→   734→      // Try to extract symbol and name from the search result
+   735→   735→      const match = r.name.match(/^([A-Z]{1,5})\s*[-:]\s*(.+)/);
+   736→   736→      return {
+   737→   737→        symbol: match?.[1]?.toUpperCase() || query.toUpperCase(),
+   738→   738→        name: match?.[2] || r.name,
+   739→   739→        sector: '',
+   740→   740→      };
+   741→   741→    });
+   742→   742→  } catch {
+   743→   743→    return [];
+   744→   744→  }
+   745→   745→}
+   746→   746→
+   747→   747→// ── LLM Forecast (real, no fake history) ─────────────────────────
+   748→   748→export async function fetchRealForecast(
+   749→   749→  symbol: string,
+   750→   750→  currentPrice: number,
+   751→   751→  timeframe: string,
+   752→   752→  indicators: Record<string, number | undefined>
+   753→   753→): Promise<{
+   754→   754→  points: Array<{ date: string; predicted: number; lower: number; upper: number; confidence: number }>;
+   755→   755→  summary: {
+   756→   756→    predictedPrice: number;
+   757→   757→    expectedChange: number;
+   758→   758→    volatility: number;
+   759→   759→    confidence: number;
+   760→   760→    analysis: string;
+   761→   761→  };
+   762→   762→} | null> {
+   763→   763→  const cacheKey = `forecast:${symbol}:${timeframe}:${currentPrice.toFixed(2)}`;
+   764→   764→  const cached = getCached<ReturnType<typeof fetchRealForecast>>(cacheKey, 900_000);
+   765→   765→  if (cached) return cached;
+   766→   766→
+   767→   767→  try {
+   768→   768→    const companyName = getCompanyName(symbol);
+   769→   769→    const days = timeframe === 'tomorrow' ? 1 : timeframe === '3days' ? 3 : timeframe === '7days' ? 7 : 30;
+   770→   770→
+   771→   771→    const systemPrompt = `You are an AI stock forecaster. Generate a realistic price forecast for ${symbol} (${companyName}).
+   772→   772→
+   773→   773→Current data:
+   774→   774→- Price: $${currentPrice.toFixed(2)}
+   775→   775→- RSI: ${indicators.rsi?.toFixed(1) || 'N/A'}
+   776→   776→- MACD: ${indicators.macd?.toFixed(2) || 'N/A'}
+   777→   777→- SMA(20): $${indicators.sma20?.toFixed(2) || 'N/A'}
+   778→   778→- SMA(50): $${indicators.sma50?.toFixed(2) || 'N/A'}
+   779→   779→- ATR: ${indicators.atr?.toFixed(2) || 'N/A'}
+   780→   780→
+   781→   781→Timeframe: Next ${days} trading day(s).
+   782→   782→
+   783→   783→Return ONLY valid JSON:
+   784→   784→{
+   785→   785→  "points": [
+   786→   786→    {"date": "YYYY-MM-DD", "predicted": <number>, "lower": <number>, "upper": <number>, "confidence": <number 40-90>}
+   787→   787→  ],
+   788→   788→  "summary": {
+   789→   789→    "predictedPrice": <number>,
+   790→   790→    "expectedChange": <percent number>,
+   791→   791→    "volatility": <number>,
+   792→   792→    "confidence": <number>,
+   793→   793→    "analysis": "<2-3 sentence analysis>"
+   794→   794→  }
+   795→   795→}
+   796→   796→
+   797→   797→Rules:
+   798→   798→- Generate exactly ${days} forecast point(s)
+   799→   799→- Predicted price must be within 5% of current price for short timeframes
+   800→   800→- Confidence intervals should widen with time
+   801→   801→- Use realistic volatility based on ATR
+   802→   802→- Dates must be future trading days (skip weekends)
+   803→   803→Respond with JSON only.`;
+   804→   804→
+   805→   805→    const llmResponse = await llmChat(systemPrompt, `Generate ${days}-day forecast for ${symbol}.`);
+   806→   806→    const parsed = parseJSON<Record<string, unknown>>(llmResponse);
+   807→   807→    if (!parsed) return null;
+   808→   808→
+   809→   809→    const points = Array.isArray(parsed.points)
+   810→   810→      ? (parsed.points as Array<Record<string, unknown>>).map((p) => ({
+   811→   811→          date: String(p.date || ''),
+   812→   812→          predicted: clamp(toNum(p.predicted, currentPrice), currentPrice * 0.9, currentPrice * 1.1),
+   813→   813→          lower: clamp(toNum(p.lower, currentPrice), currentPrice * 0.9, currentPrice),
+   814→   814→          upper: clamp(toNum(p.upper, currentPrice), currentPrice, currentPrice * 1.1),
+   815→   815→          confidence: clamp(toNum(p.confidence, 60), 30, 90),
+   816→   816→        }))
+   817→   817→      : [];
+   818→   818→
+   819→   819→    const summary = parsed.summary as Record<string, unknown> | undefined;
+   820→   820→    const predictedPrice = points.length > 0 ? points[points.length - 1].predicted : currentPrice;
+   821→   821→    const expectedChange = ((predictedPrice - currentPrice) / currentPrice) * 100;
+   822→   822→
+   823→   823→    const result = {
+   824→   824→      points,
+   825→   825→      summary: {
+   826→   826→        predictedPrice,
+   827→   827→        expectedChange: parseFloat(expectedChange.toFixed(2)),
+   828→   828→        volatility: toNum(summary?.volatility, 2),
+   829→   829→        confidence: clamp(toNum(summary?.confidence, 60), 30, 90),
+   830→   830→        analysis: String(summary?.analysis || 'No analysis available.'),
+   831→   831→      },
+   832→   832→    };
+   833→   833→
+   834→   834→    setCache(cacheKey, result);
+   835→   835→    return result;
+   836→   836→  } catch (error) {
+   837→   837→    console.error(`Failed to fetch forecast for ${symbol}:`, error);
+   838→   838→    return null;
+   839→   839→  }
+   840→   840→}

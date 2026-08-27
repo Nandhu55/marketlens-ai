@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { fetchRealPrediction, fetchRealStockQuote } from '@/lib/ai-service';
-import { fetchHistoricalOHLCV, calculateRSI, computeAllIndicators } from '@/lib/stock-utils';
+import { fetchRealPrediction, fetchRealStockQuote, fetchHistoricalOHLCV } from '@/lib/ai-service';
+import { computeAllIndicators } from '@/lib/stock-utils';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);

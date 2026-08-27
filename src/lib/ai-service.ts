@@ -61,24 +61,17 @@ export async function webSearch(
   const args: Record<string, unknown> = { query, num };
   if (recencyDays) args.recency_days = recencyDays;
 
-  let lastError: Error | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const results = await zai.functions.invoke('web_search', args);
-      const typed = (results as SearchResult[]).map((r, i) => ({ ...r, rank: r.rank ?? i + 1 }));
-      setCache(cacheKey, typed);
-      return typed;
-    } catch (err) {
-      lastError = err as Error;
-      const isRateLimit = (err as Error).message?.includes('429');
-      if (isRateLimit && attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
-        continue;
-      }
-      throw err;
-    }
+  try {
+    const results = await Promise.race([
+      zai.functions.invoke('web_search', args),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000)),
+    ]);
+    const typed = (results as SearchResult[]).map((r, i) => ({ ...r, rank: r.rank ?? i + 1 }));
+    setCache(cacheKey, typed);
+    return typed;
+  } catch (err) {
+    throw err;
   }
-  throw lastError || new Error('web_search failed after retries');
 }
 
 // ── Web Reader ──────────────────────────────────────────────────
@@ -93,7 +86,10 @@ export async function readPage(url: string, cacheTtlMs = 600_000): Promise<{
   if (cached) return cached;
 
   const zai = await getZAI();
-  const result = await zai.functions.invoke('page_reader', { url });
+  const result = await Promise.race([
+    zai.functions.invoke('page_reader', { url }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000)),
+  ]);
 
   const data = {
     title: result.data?.title || '',
@@ -120,13 +116,17 @@ export async function llmChat(
   }
 
   const zai = await getZAI();
-  const completion = await zai.chat.completions.create({
-    messages: [
-      { role: 'assistant', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
-    thinking: { type: 'disabled' },
-  });
+  const completion = await Promise.race([
+    zai.chat.completions.create({
+      messages: [
+        { role: 'assistant', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      thinking: { type: 'disabled' },
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('LLM Timeout')), 20000)),
+  ]) as Awaited<ReturnType<typeof zai.chat.completions.create>>;
+
 
   const response = completion.choices[0]?.message?.content || '';
   if (cacheKey) setCache(cacheKey, response);
@@ -282,6 +282,19 @@ export async function fetchHistoricalOHLCV(
   const cached = getCached<OHLCV[]>(cacheKey, 600_000); // 10 min
   if (cached) return cached;
 
+  const result = await Promise.race([
+    fetchHistoricalOHLCVInner(symbol, days),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 25000)),
+  ]);
+
+  if (result) setCache(cacheKey, result);
+  return result;
+}
+
+async function fetchHistoricalOHLCVInner(
+  symbol: string,
+  days: number = 90
+): Promise<OHLCV[] | null> {
   try {
     const companyName = getCompanyName(symbol);
 

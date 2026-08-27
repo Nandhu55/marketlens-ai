@@ -12,34 +12,37 @@ async function fetchQuotesSequentially(symbols: string[]) {
     fetchedAt: string;
   }> = {};
 
-  const symbolsToFetch = symbols.slice(0, 6);
+  // Fetch quotes in parallel with a per-stock timeout
+  const results = await Promise.allSettled(
+    symbols.map((sym) =>
+      Promise.race([
+        fetchRealStockQuote(sym),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 12000)),
+      ])
+    )
+  );
 
-  for (const sym of symbolsToFetch) {
-    try {
-      const quote = await fetchRealStockQuote(sym);
-      if (quote && quote.price > 0) {
-        realQuotes[sym] = {
-          price: quote.price,
-          change: quote.change,
-          changePercent: quote.changePercent,
-          volume: quote.volume,
-          name: quote.name || sym,
-          source: quote.source,
-          fetchedAt: quote.fetchedAt,
-        };
-      }
-    } catch {
-      // Continue with other stocks
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value) {
+      const sym = symbols[i];
+      realQuotes[sym] = {
+        price: result.value.price,
+        change: result.value.change,
+        changePercent: result.value.changePercent,
+        volume: result.value.volume,
+        name: result.value.name || sym,
+        source: result.value.source,
+        fetchedAt: result.value.fetchedAt,
+      };
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+  });
 
   return realQuotes;
 }
 
 export async function GET() {
   try {
-    const symbols = ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'GOOG', 'META', 'AMZN', 'JPM', 'V', 'NFLX'];
+    const symbols = ['AAPL', 'TSLA', 'MSFT', 'NVDA'];
 
     const [overview, quotes] = await Promise.all([
       fetchMarketOverview().catch(() => null),

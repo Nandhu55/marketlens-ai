@@ -133,3 +133,29 @@ Stage Summary:
 - **"No Live Data Available"** shown when data cannot be fetched (never fake numbers)
 - **WebSocket mini-service** for future real-time streaming
 - **Zero lint errors**, all 13 pages verified in browser
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Full audit and fix — verify everything works properly
+
+Work Log:
+- **AUDIT FINDING 1 (CRITICAL)**: `src/app/api/prediction/route.ts` line 3 imported `fetchHistoricalOHLCV` from `@/lib/stock-utils` but it's exported from `@/lib/ai-service`. Also imported unused `calculateRSI`. This single broken import caused ALL API routes to return 500 due to Next.js module system.
+  - Fix: Changed import to `fetchHistoricalOHLCV` from `@/lib/ai-service`, removed unused `calculateRSI`.
+- **AUDIT FINDING 2 (PERFORMANCE)**: ZAI SDK retry logic (3 attempts × 2s/4s backoff) caused `/api/market-overview` to take 44+ seconds when rate limited. The sequential fetching of 10 stocks made this even worse.
+  - Fix: Removed retry loops, added `Promise.race` timeouts (15s for web search/reader, 20s for LLM, 25s for OHLCV fetch).
+  - Fix: Changed market-overview from sequential 10-stock fetching to parallel 4-stock fetching with per-stock 12s timeout.
+- **AUDIT FINDING 3 (STABILITY)**: `fetchHistoricalOHLCV` could take 95+ seconds (3 strategies: Yahoo reader + 3 page reads + LLM reconstruction).
+  - Fix: Added 25s overall timeout wrapper.
+- Verified all 9 API routes return 200 with proper JSON structure.
+- Verified real data flows: AAPL $313.45, TSLA $345.82 (real prices from web search + LLM extraction).
+- Verified graceful 429 rate-limit handling: returns "No Live Data Available" with proper error messages, never crashes.
+- Verified zero lint errors.
+- Verified HTML structure renders correctly with all 13 sidebar items, header, footer.
+- Agent-browser could not connect due to sandbox network namespace isolation (not a code issue).
+
+Stage Summary:
+- **1 critical bug fixed**: prediction route import mismatch causing all API 500 errors
+- **3 performance optimizations**: removed retry storms, added timeouts, parallelized market-overview
+- **All 9 API routes verified**: stock, sentiment, prediction, forecast, chat, screener, search, market-overview, portfolio
+- **Zero lint errors**, all routes return 200
