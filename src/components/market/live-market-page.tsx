@@ -128,7 +128,7 @@ const TIMEFRAMES = [
 
 // ─── Main LiveMarketPage ────────────────────────────────────────────
 export function LiveMarketPage() {
-  const { selectedStock, setSelectedStock, liveTicks, wsConnectionStatus, staleSymbols, subscribedWsSymbols } = useAppStore();
+  const { selectedStock, setSelectedStock, liveTicks, wsConnectionStatus, usWsConnectionStatus, staleSymbols, subscribedWsSymbols } = useAppStore();
 
   // Initialize live WebSocket connection
   useLiveMarket();

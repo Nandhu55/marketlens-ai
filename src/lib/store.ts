@@ -74,7 +74,7 @@ export interface LiveTick {
   changePercent: number;
   volume: number;
   timestamp: string;
-  source: 'upstox';
+  source: 'upstox' | 'finnhub';
   dataStatus: LiveDataStatus;
   ltp?: number;
   open?: number;
@@ -87,11 +87,13 @@ export interface LiveTick {
 
 export interface WsConnectionInfo {
   status: WsConnectionStatus;
-  upstoxStatus: WsConnectionStatus;
+  upstoxStatus?: WsConnectionStatus;
+  finnhubStatus?: WsConnectionStatus;
   subscribedSymbols: string[];
   staleSymbols: string[];
   connectedClients: number;
   lastUpstoxConnect?: string;
+  lastFinnhubConnect?: string;
   reconnectAttempt?: number;
 }
 
@@ -118,9 +120,12 @@ interface AppState {
   setMarketOverview: (overview: MarketOverviewData | null) => void;
   isLive: boolean;
   setIsLive: (live: boolean) => void;
-  // WebSocket live market state
+  // WebSocket live market state (India — Upstox)
   wsConnectionStatus: WsConnectionStatus;
   setWsConnectionStatus: (status: WsConnectionStatus) => void;
+  // WebSocket live market state (US — Finnhub)
+  usWsConnectionStatus: WsConnectionStatus;
+  setUsWsConnectionStatus: (status: WsConnectionStatus) => void;
   liveTicks: Record<string, LiveTick>;
   updateLiveTick: (tick: LiveTick) => void;
   subscribedWsSymbols: string[];
@@ -180,9 +185,12 @@ export const useAppStore = create<AppState>((set) => ({
   setMarketOverview: (overview) => set({ marketOverview: overview }),
   isLive: false,
   setIsLive: (live) => set({ isLive: live }),
-  // WebSocket live market state
+  // WebSocket live market state (India — Upstox)
   wsConnectionStatus: 'DISCONNECTED',
   setWsConnectionStatus: (status) => set({ wsConnectionStatus: status }),
+  // WebSocket live market state (US — Finnhub)
+  usWsConnectionStatus: 'DISCONNECTED',
+  setUsWsConnectionStatus: (status) => set({ usWsConnectionStatus: status }),
   liveTicks: {},
   updateLiveTick: (tick) =>
     set((state) => ({

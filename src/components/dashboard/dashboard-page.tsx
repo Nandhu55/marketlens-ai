@@ -252,7 +252,7 @@ function KPISkeleton() {
 
 // ─── Main Dashboard Page ────────────────────────────────────────────
 export function DashboardPage() {
-  const { realQuotes, selectedStock, watchlist, isLive, liveTicks, wsConnectionStatus, staleSymbols } = useAppStore();
+  const { realQuotes, selectedStock, watchlist, isLive, liveTicks, wsConnectionStatus, usWsConnectionStatus, staleSymbols } = useAppStore();
   const [overviewData, setOverviewData] = useState<MarketOverviewResponse | null>(null);
   const [stockData, setStockData] = useState<StockDataResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -357,10 +357,10 @@ export function DashboardPage() {
         <motion.div variants={itemVariants} className="glass-card overflow-hidden">
           <div className="flex items-center">
             <div className="flex-shrink-0 px-4 py-2 border-r border-white/5 flex items-center gap-2">
-              {(isLive || wsConnectionStatus === 'CONNECTED') && (
+              {(isLive || wsConnectionStatus === 'CONNECTED' || usWsConnectionStatus === 'CONNECTED') && (
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-400 uppercase tracking-wider">
                   <Zap className="w-3 h-3" />
-                  {wsConnectionStatus === 'CONNECTED' ? 'Live' : 'Loading'}
+                  {(wsConnectionStatus === 'CONNECTED' || usWsConnectionStatus === 'CONNECTED') ? 'Live' : 'Loading'}
                 </span>
               )}
               <CandlestickChart className="w-3.5 h-3.5 text-indigo-400" />

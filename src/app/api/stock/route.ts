@@ -35,7 +35,7 @@ export async function GET(request: Request) {
     const ohlcvError: MarketDataError | null = isMarketDataError(ohlcvResult) ? ohlcvResult : null;
 
     if (quoteError && quoteError.code === 'NOT_CONFIGURED') {
-      const envVar = market === 'IN' ? 'UPSTOX_ANALYTICS_TOKEN' : 'TWELVE_DATA_API_KEY';
+      const envVar = market === 'IN' ? 'UPSTOX_ANALYTICS_TOKEN' : 'FINNHUB_API_KEY';
       return NextResponse.json({
         error: 'NOT_CONFIGURED',
         message: `${envVar} is not configured`,

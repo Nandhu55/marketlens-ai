@@ -103,6 +103,16 @@ export const upstoxProvider: MarketDataProvider = {
       };
     }
 
+    const token = getToken();
+    if (!token) {
+      return {
+        code: 'NOT_CONFIGURED',
+        message: 'UPSTOX_ANALYTICS_TOKEN is not configured',
+        symbol: upper,
+        provider: 'upstox',
+      };
+    }
+
     const cacheKey = `upstox:quote:${mapping.instrumentKey}`;
     const cached = getCached<MarketQuote>(cacheKey, 60_000); // 1 min for quotes
     if (cached) return cached;
@@ -173,6 +183,16 @@ export const upstoxProvider: MarketDataProvider = {
       return {
         code: 'NO_DATA',
         message: `Symbol ${upper} is not supported by the Indian market provider`,
+        symbol: upper,
+        provider: 'upstox',
+      };
+    }
+
+    const token = getToken();
+    if (!token) {
+      return {
+        code: 'NOT_CONFIGURED',
+        message: 'UPSTOX_ANALYTICS_TOKEN is not configured',
         symbol: upper,
         provider: 'upstox',
       };

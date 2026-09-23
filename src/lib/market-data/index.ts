@@ -34,10 +34,12 @@ export {
 export { upstoxProvider } from './upstox-provider';
 
 export {
-  twelveDataProvider,
+  finnhubProvider,
   isUSSymbol,
   getUSSymbolMapping,
-  mapInterval,
+  getAllUSSymbols,
   searchSymbols,
-  type TDSymbolSearchResult,
-} from './twelve-data-provider';
+  getCompanyProfile,
+  getUSMarketStatus,
+  type FinnhubCompanyProfile,
+} from './finnhub-provider';

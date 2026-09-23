@@ -80,7 +80,7 @@ export async function GET() {
         indian: 'UNKNOWN' as const,
         us: 'UNKNOWN' as const,
         indianProvider: 'upstox',
-        usProvider: 'twelvedata',
+        usProvider: 'finnhub',
       })),
       Promise.resolve(getIndianMarketStatus()),
     ]);
@@ -132,7 +132,7 @@ export async function GET() {
         indian: 'UNKNOWN' as const,
         us: 'UNKNOWN' as const,
         indianProvider: 'upstox',
-        usProvider: 'twelvedata',
+        usProvider: 'finnhub',
       },
       indianMarketStatus: 'UNKNOWN',
     });

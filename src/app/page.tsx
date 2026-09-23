@@ -50,7 +50,7 @@ function PageLoading() {
 
 function MarketClock() {
   const [time, setTime] = useState('');
-  const { wsConnectionStatus, liveTicks, staleSymbols, subscribedWsSymbols } = useAppStore();
+  const { wsConnectionStatus, usWsConnectionStatus, liveTicks, staleSymbols, subscribedWsSymbols } = useAppStore();
 
   useEffect(() => {
     const update = () => {
@@ -84,36 +84,34 @@ function MarketClock() {
   const nseClose = 15 * 60 + 30;
   const isMarketHours = isWeekday && istTotalMin >= nseOpen && istTotalMin <= nseClose;
 
-  // Determine live data status truthfully
+  // Determine live data status truthfully (check both India and US)
   const hasLiveTicks = subscribedWsSymbols.length > 0 &&
     subscribedWsSymbols.some((s) => liveTicks[s] && !staleSymbols.includes(s));
-  const isActuallyLive = wsConnectionStatus === 'CONNECTED' && hasLiveTicks;
+  const indiaLive = wsConnectionStatus === 'CONNECTED' && hasLiveTicks;
+  const usLive = usWsConnectionStatus === 'CONNECTED' && hasLiveTicks;
+
+  // Status label helper
+  function wsStatusLabel(status: string, provider: string) {
+    if (status === 'CONNECTED') return <span className="text-emerald-400 font-semibold">LIVE</span>;
+    if (status === 'CONNECTING' || status === 'RECONNECTING') return <span className="text-amber-400">Connecting</span>;
+    if (status === 'ERROR') return <span className="text-red-400">Error</span>;
+    return <span className="text-slate-500">OFF</span>;
+  }
 
   return (
-    <div className="flex items-center gap-4 text-xs">
-      {/* WebSocket Connection Status */}
-      {isActuallyLive ? (
-        <div className="flex items-center gap-1.5 text-emerald-400">
-          <Radio className="w-3 h-3 animate-pulse" />
-          <span className="font-semibold">LIVE</span>
-          <span className="text-[9px] text-slate-500 font-normal">Upstox WS</span>
-        </div>
-      ) : wsConnectionStatus === 'CONNECTING' || wsConnectionStatus === 'RECONNECTING' ? (
-        <div className="flex items-center gap-1.5 text-amber-400">
-          <Loader2 className="w-3 h-3 animate-spin" />
-          <span>Connecting...</span>
-        </div>
-      ) : wsConnectionStatus === 'ERROR' ? (
-        <div className="flex items-center gap-1.5 text-red-400">
-          <WifiOff className="w-3 h-3" />
-          <span>WS Error</span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5 text-slate-500">
-          <Wifi className="w-3 h-3" />
-          <span>Disconnected</span>
-        </div>
-      )}
+    <div className="flex items-center gap-3 text-xs">
+      {/* India (Upstox) WebSocket Status */}
+      <div className="flex items-center gap-1">
+        {indiaLive ? <Radio className="w-3 h-3 animate-pulse text-emerald-400" /> : <Wifi className="w-3 h-3 text-slate-500" />}
+        <span className="text-[9px] text-slate-500">IN:</span>
+        {wsStatusLabel(wsConnectionStatus, 'upstox')}
+      </div>
+      {/* US (Finnhub) WebSocket Status */}
+      <div className="flex items-center gap-1">
+        {usLive ? <Radio className="w-3 h-3 animate-pulse text-emerald-400" /> : <Wifi className="w-3 h-3 text-slate-500" />}
+        <span className="text-[9px] text-slate-500">US:</span>
+        {wsStatusLabel(usWsConnectionStatus, 'finnhub')}
+      </div>
       <div className="flex items-center gap-1.5 text-slate-500">
         <Clock className="w-3 h-3" />
         <span>NSE {time}</span>
@@ -130,7 +128,7 @@ function MarketClock() {
 }
 
 export default function Home() {
-  const { activePage, setRealQuotes, setMarketOverview, setIsLive, isLive, liveTicks, wsConnectionStatus } = useAppStore();
+  const { activePage, setRealQuotes, setMarketOverview, setIsLive, isLive, liveTicks, wsConnectionStatus, usWsConnectionStatus } = useAppStore();
   const ActiveComponent = pageComponents[activePage];
 
   // Initialize WebSocket connection to price-streamer
@@ -166,7 +164,9 @@ export default function Home() {
   }, [fetchMarketData]);
 
   // Determine effective isLive: REST data OR WebSocket connected with live ticks
-  const hasWsLive = wsConnectionStatus === 'CONNECTED' && Object.keys(liveTicks).length > 0;
+  const indiaWsLive = wsConnectionStatus === 'CONNECTED' && Object.keys(liveTicks).some(k => liveTicks[k]?.source === 'upstox');
+  const usWsLive = usWsConnectionStatus === 'CONNECTED' && Object.keys(liveTicks).some(k => liveTicks[k]?.source === 'finnhub');
+  const hasWsLive = indiaWsLive || usWsLive;
   const effectiveLive = isLive || hasWsLive;
 
   return (
@@ -209,7 +209,10 @@ export default function Home() {
           <span className="flex items-center gap-1">
             {effectiveLive ? (
               <>
-                {hasWsLive ? 'Real-time via Upstox WebSocket' : 'Real-time via Market APIs'}
+                {indiaWsLive && usWsLive ? 'Live: Upstox WS + Finnhub WS'
+                  : indiaWsLive ? 'Live: Upstox WS (India)'
+                  : usWsLive ? 'Live: Finnhub WS (US)'
+                  : 'Real-time via Market APIs'}
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
               </>
             ) : (

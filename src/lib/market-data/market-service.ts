@@ -1,7 +1,7 @@
 // Market Service — Facade layer for market data
 // Routes requests to the correct provider based on symbol market.
 // - Indian symbols → Upstox provider
-// - US symbols → Twelve Data provider
+// - US symbols → Finnhub provider
 // AI services (prediction, forecast, news, chat) remain in ai-service.ts.
 
 import type {
@@ -14,7 +14,7 @@ import type {
 } from './types';
 import { isIndianSymbol } from './symbol-mapping';
 import { upstoxProvider } from './upstox-provider';
-import { twelveDataProvider, isUSSymbol, searchSymbols as tdSearchSymbols } from './twelve-data-provider';
+import { finnhubProvider, isUSSymbol, searchSymbols as finnhubSearchSymbols } from './finnhub-provider';
 
 // ── Provider Status ──────────────────────────────────────────────
 
@@ -26,13 +26,13 @@ export async function getMarketDataProviderStatus(): Promise<{
 }> {
   const [indian, us] = await Promise.all([
     upstoxProvider.getStatus(),
-    twelveDataProvider.getStatus(),
+    finnhubProvider.getStatus(),
   ]);
   return {
     indian,
     us,
     indianProvider: 'upstox',
-    usProvider: 'twelvedata',
+    usProvider: 'finnhub',
   };
 }
 
@@ -65,7 +65,7 @@ export function getSymbolMarket(symbol: string): 'IN' | 'US' | 'UNKNOWN' {
 /**
  * Fetch a real market quote.
  * - Indian symbols → Upstox provider (NO web search, NO LLM).
- * - US symbols → Twelve Data provider (NO web search, NO LLM).
+ * - US symbols → Finnhub provider (NO web search, NO LLM).
  */
 export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQuote> | MarketDataError> {
   const upper = symbol.toUpperCase();
@@ -83,14 +83,14 @@ export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQ
     };
   }
 
-  // US symbols → Twelve Data
+  // US symbols → Finnhub
   if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
-    const result = await twelveDataProvider.getQuote(upper);
+    const result = await finnhubProvider.getQuote(upper);
     if (isMarketDataError(result)) return result;
 
     return {
       data: result,
-      source: 'twelvedata',
+      source: 'finnhub',
       dataStatus: result.marketStatus === 'OPEN' ? 'LIVE' : 'HISTORICAL',
       timestamp: result.timestamp,
     };
@@ -109,7 +109,7 @@ export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQ
 /**
  * Fetch historical OHLCV candles.
  * - Indian symbols → Upstox Historical Candle API (NO web search, NO LLM, NO fabrication).
- * - US symbols → Twelve Data Time Series API (NO web search, NO LLM, NO fabrication).
+ * - US symbols → Finnhub Stock Candle API (NO web search, NO LLM, NO fabrication).
  */
 export async function fetchOHLCV(
   symbol: string,
@@ -130,14 +130,14 @@ export async function fetchOHLCV(
     };
   }
 
-  // US symbols → Twelve Data
+  // US symbols → Finnhub
   if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
-    const result = await twelveDataProvider.getHistoricalOHLCV(upper, days);
+    const result = await finnhubProvider.getHistoricalOHLCV(upper, days);
     if (isMarketDataError(result)) return result;
 
     return {
       data: result,
-      source: 'twelvedata',
+      source: 'finnhub',
       dataStatus: 'HISTORICAL',
       timestamp: new Date().toISOString(),
     };
@@ -158,10 +158,10 @@ export async function fetchOHLCV(
  * Falls back to local mapping if provider is unavailable.
  */
 export async function searchSymbolsProvider(query: string): Promise<SymbolSearchResult[] | MarketDataError> {
-  // Try Twelve Data symbol search
-  const tdResult = await tdSearchSymbols(query);
-  if (!isMarketDataError(tdResult)) {
-    return tdResult.map(r => ({
+  // Try Finnhub symbol search
+  const result = await finnhubSearchSymbols(query);
+  if (!isMarketDataError(result)) {
+    return result.map(r => ({
       symbol: r.symbol,
       name: r.name,
       exchange: r.exchange,
@@ -171,5 +171,5 @@ export async function searchSymbolsProvider(query: string): Promise<SymbolSearch
   }
 
   // If provider search fails, return the error
-  return tdResult;
+  return result;
 }
