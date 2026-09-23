@@ -57,6 +57,15 @@ export type MarketDataError = {
   provider?: string;
 };
 
+/** Symbol search result from a provider. */
+export type SymbolSearchResult = {
+  symbol: string;
+  name: string;
+  exchange?: string;
+  type?: string;
+  currency?: string;
+};
+
 /** Market-data provider interface — allows future providers (Twelve Data, etc.). */
 export type MarketDataProvider = {
   readonly name: string;

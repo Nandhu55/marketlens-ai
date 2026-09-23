@@ -2,14 +2,18 @@
 // ALL data is real. NO mock, NO fake, NO generated, NO fallback dummy data.
 // If data cannot be fetched, functions return null.
 //
-// Market data (quotes, OHLCV) for Indian symbols is handled by @/lib/market-data.
-// This file handles: web search, page reading, LLM chat, AI prediction, forecast,
-// news sentiment, chat assistant, market overview, and US market quote fallback.
+// Market data (quotes, OHLCV) is handled by @/lib/market-data:
+//   - Indian symbols → Upstox provider (V2 REST API)
+//   - US symbols → Twelve Data provider (REST API)
+//   NO web search or LLM is used for market prices or OHLCV.
+//
+// This file handles: web search (non-market), page reading, LLM chat,
+// AI prediction, forecast, news sentiment, chat assistant, market overview.
 
 import ZAI from 'z-ai-web-dev-sdk';
 import type { OHLCV } from './stock-utils';
 import { getCached, setCache } from '@/lib/cache';
-import { isIndianSymbol, fetchQuote, fetchOHLCV, isMarketDataError, type MarketQuote, type OHLCVCandle } from '@/lib/market-data';
+import { isIndianSymbol, isUSSymbol, fetchQuote, fetchOHLCV, isMarketDataError, type MarketQuote, type OHLCVCandle } from '@/lib/market-data';
 
 // ── ZAI Singleton ───────────────────────────────────────────────
 let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null;
@@ -223,86 +227,53 @@ export async function fetchRealStockQuote(symbol: string): Promise<RealStockQuot
     }
   }
 
-  // ── US symbols: existing web-search + LLM path (unchanged) ──
-  const cacheKey = `quote:${upper}`;
-  const cached = getCached<RealStockQuote>(cacheKey, 300_000); // 5 min
-  if (cached) return cached;
-
-  try {
-    const companyName = getCompanyName(upper);
-    const query = `${upper} ${companyName} stock price today quote 2025`;
-    const results = await webSearch(query, { num: 5, recencyDays: 1 });
-
-    if (!results.length) return null;
-
-    const snippets = results.slice(0, 5)
-      .map((r, i) => `[${i + 1}] ${r.name}\n${r.snippet}`)
-      .join('\n\n');
-
-    const systemPrompt = `You are a financial data extraction expert. Extract the CURRENT stock quote data from the provided search results.
-Return ONLY a valid JSON object with these exact fields:
-- price: current stock price (number)
-- change: today's dollar change (number, can be negative)
-- changePercent: today's percentage change (number, can be negative)
-- volume: today's trading volume (number)
-- marketCap: market capitalization (number)
-- dayHigh: today's high (number)
-- dayLow: today's low (number)
-- openPrice: today's open (number)
-- previousClose: previous close (number)
-- pe: P/E ratio (number)
-- eps: EPS (number)
-- dividend: annual dividend (number)
-- high52w: 52-week high (number)
-- low52w: 52-week low (number)
-
-If you cannot find a value, use 0. Be as accurate as possible.
-Respond with JSON only, no markdown, no explanation.`;
-
-    const userMessage = `Extract the current stock quote for ${upper} (${companyName}) from these search results:\n\n${snippets}`;
-    const llmResponse = await llmChat(systemPrompt, userMessage, { cacheKey: `quote-llm:${upper}` });
-
-    const parsed = parseJSON<Record<string, unknown>>(llmResponse);
-    if (!parsed) return null;
-
-    const quote: RealStockQuote = {
-      price: toNum(parsed.price),
-      change: toNum(parsed.change),
-      changePercent: toNum(parsed.changePercent),
-      volume: toNum(parsed.volume),
-      marketCap: toNum(parsed.marketCap),
-      high52w: toNum(parsed.high52w),
-      low52w: toNum(parsed.low52w),
-      dayHigh: toNum(parsed.dayHigh),
-      dayLow: toNum(parsed.dayLow),
-      openPrice: toNum(parsed.openPrice),
-      previousClose: toNum(parsed.previousClose),
-      pe: toNum(parsed.pe),
-      eps: toNum(parsed.eps),
-      dividend: toNum(parsed.dividend),
-      avgVolume: 0,
-      dayRange: parsed.dayRange ? String(parsed.dayRange) : '',
-      source: results[0]?.host_name || 'web-search',
-      fetchedAt: new Date().toISOString(),
-      name: companyName,
-      sector: '',
-      industry: '',
-      exchange: '',
-    };
-
-    if (quote.price <= 0) return null;
-
-    setCache(cacheKey, quote);
-    return quote;
-  } catch (error) {
-    console.error(`Failed to fetch real quote for ${upper}:`, error);
-    return null;
+  // ── US symbols: Twelve Data provider (NO web search, NO LLM) ──
+  if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
+    try {
+      const result = await fetchQuote(upper);
+      if (isMarketDataError(result)) {
+        console.error(`[market-data] ${upper}: ${result.message}`);
+        return null;
+      }
+      const mq = result.data;
+      const quote: RealStockQuote = {
+        price: mq.price,
+        change: mq.change || 0,
+        changePercent: mq.changePercent || 0,
+        volume: mq.volume || 0,
+        marketCap: 0,
+        high52w: 0,
+        low52w: 0,
+        dayHigh: mq.high || 0,
+        dayLow: mq.low || 0,
+        openPrice: mq.open || 0,
+        previousClose: mq.previousClose || 0,
+        pe: 0,
+        eps: 0,
+        dividend: 0,
+        avgVolume: 0,
+        dayRange: '',
+        source: mq.source,
+        fetchedAt: mq.timestamp,
+        name: getCompanyName(upper),
+        sector: '',
+        industry: '',
+        exchange: mq.exchange,
+      };
+      if (quote.price <= 0) return null;
+      return quote;
+    } catch (error) {
+      console.error(`[market-data] ${upper} quote failed:`, error);
+      return null;
+    }
   }
+
+  return null;
 }
 
 // ── Real Historical OHLCV Data Fetching ─────────────────────────
 // Indian symbols: Upstox Historical Candle API (NO web search, NO LLM, NO fabrication).
-// US symbols: existing Yahoo/search + LLM path (unchanged).
+// US symbols: Twelve Data Time Series API (NO web search, NO LLM, NO fabrication).
 
 export async function fetchHistoricalOHLCV(
   symbol: string,
@@ -334,97 +305,31 @@ export async function fetchHistoricalOHLCV(
     }
   }
 
-  // ── US symbols: existing web-scraping + LLM path (unchanged, but fabrication removed) ──
-  const cacheKey = `ohlcv:${upper}:${days}`;
-  const cached = getCached<OHLCV[]>(cacheKey, 600_000); // 10 min
-  if (cached) return cached;
-
-  const result = await Promise.race([
-    fetchHistoricalOHLCVUS(upper, days),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), 25000)),
-  ]);
-
-  if (result) setCache(cacheKey, result);
-  return result;
-}
-
-async function fetchHistoricalOHLCVUS(
-  symbol: string,
-  days: number = 90
-): Promise<OHLCV[] | null> {
-  try {
-    const companyName = getCompanyName(symbol);
-
-    // Strategy 1: Try to read Yahoo Finance history page
-    const yahooUrl = `https://finance.yahoo.com/quote/${symbol}/history/`;
-    let pageData: { html: string; title: string } | null = null;
-
+  // ── US symbols: Twelve Data provider ──
+  if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
     try {
-      pageData = await readPage(yahooUrl, 300_000);
-    } catch {
-      // Yahoo may block, fall through to search-based approach
-    }
-
-    if (pageData?.html && pageData.html.length > 500) {
-      const systemPrompt = `You are a financial data parser. Extract historical stock price data from the provided HTML.
-Return ONLY a valid JSON array of objects with exact fields: date, open, high, low, close, volume.
-- date format: YYYY-MM-DD
-- all values are numbers
-- Include the most recent ${days} trading days
-- Sort chronologically from oldest to newest
-- If data is not available in the HTML, return an empty array []
-Respond with JSON only, no markdown.`;
-
-      const htmlSnippet = pageData.html.substring(0, 8000);
-      const userMessage = `Extract OHLCV data for ${symbol} from this HTML:\n${htmlSnippet}`;
-
-      const llmResponse = await llmChat(systemPrompt, userMessage, {
-        cacheKey: `ohlcv-yahoo:${symbol}:${days}`,
-        cacheTtlMs: 600_000,
-      });
-
-      const parsed = parseJSON<OHLCV[]>(llmResponse);
-      if (parsed && parsed.length >= 20) {
-        return parsed;
+      const result = await fetchOHLCV(upper, days);
+      if (isMarketDataError(result)) {
+        console.error(`[market-data] ${upper} OHLCV: ${result.message}`);
+        return null;
       }
+      // Map OHLCVCandle → stock-utils OHLCV
+      const mapped: OHLCV[] = result.data.map((c) => ({
+        date: c.timestamp.split('T')[0],
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      }));
+      return mapped;
+    } catch (error) {
+      console.error(`[market-data] ${upper} OHLCV failed:`, error);
+      return null;
     }
-
-    // Strategy 2: Search for historical price data pages
-    const searchQuery = `${symbol} ${companyName} stock price history last ${days} days OHLCV data 2025`;
-    const searchResults = await webSearch(searchQuery, { num: 8, recencyDays: 7 });
-
-    if (searchResults.length > 0) {
-      for (const result of searchResults.slice(0, 3)) {
-        if (result.url.includes('finance.yahoo') || result.url.includes('google.com/finance') || result.url.includes('tradingview')) {
-          try {
-            const page = await readPage(result.url, 300_000);
-            if (page.html && page.html.length > 1000) {
-              const systemPrompt = `Extract historical daily stock OHLCV data from the HTML.
-Return JSON array: [{"date":"YYYY-MM-DD","open":num,"high":num,"low":num,"close":num,"volume":num}]
-Most recent ${days} days. Chronological order. If not extractable, return [].`;
-              const snippet = page.html.substring(0, 10000);
-              const resp = await llmChat(systemPrompt, `Extract ${symbol} OHLCV from:\n${snippet}`, {
-                cacheKey: `ohlcv-page:${symbol}:${days}`,
-              });
-              const data = parseJSON<OHLCV[]>(resp);
-              if (data && data.length >= 20) {
-                return data;
-              }
-            }
-          } catch {
-            continue;
-          }
-        }
-      }
-    }
-
-    // REMOVED: Strategy 3 (LLM fabrication of OHLCV) has been deleted.
-    // Per Phase 2 requirements, if real data cannot be fetched, return null.
-    return null;
-  } catch (error) {
-    console.error(`Failed to fetch historical OHLCV for ${symbol}:`, error);
-    return null;
   }
+
+  return null;
 }
 
 // ── Real News Fetching + LLM Sentiment ──────────────────────────

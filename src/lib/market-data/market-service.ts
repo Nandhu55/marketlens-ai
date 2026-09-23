@@ -1,5 +1,7 @@
 // Market Service — Facade layer for market data
 // Routes requests to the correct provider based on symbol market.
+// - Indian symbols → Upstox provider
+// - US symbols → Twelve Data provider
 // AI services (prediction, forecast, news, chat) remain in ai-service.ts.
 
 import type {
@@ -8,18 +10,30 @@ import type {
   ProviderStatus,
   MarketDataError,
   ProviderResult,
+  SymbolSearchResult,
 } from './types';
 import { isIndianSymbol } from './symbol-mapping';
 import { upstoxProvider } from './upstox-provider';
+import { twelveDataProvider, isUSSymbol, searchSymbols as tdSearchSymbols } from './twelve-data-provider';
 
 // ── Provider Status ──────────────────────────────────────────────
 
 export async function getMarketDataProviderStatus(): Promise<{
   indian: ProviderStatus;
-  provider: string;
+  us: ProviderStatus;
+  indianProvider: string;
+  usProvider: string;
 }> {
-  const indian = await upstoxProvider.getStatus();
-  return { indian, provider: 'upstox' };
+  const [indian, us] = await Promise.all([
+    upstoxProvider.getStatus(),
+    twelveDataProvider.getStatus(),
+  ]);
+  return {
+    indian,
+    us,
+    indianProvider: 'upstox',
+    usProvider: 'twelvedata',
+  };
 }
 
 // ── Type Guard ───────────────────────────────────────────────────
@@ -35,16 +49,28 @@ export function isMarketDataError<T>(
   );
 }
 
+// ── Symbol Classification ────────────────────────────────────────
+
+/** Determine which market a symbol belongs to. */
+export function getSymbolMarket(symbol: string): 'IN' | 'US' | 'UNKNOWN' {
+  const upper = symbol.toUpperCase();
+  if (isIndianSymbol(upper)) return 'IN';
+  if (isUSSymbol(upper)) return 'US';
+  // Default unknown symbols to US (most common global tickers)
+  return 'US';
+}
+
 // ── Quote Fetching ───────────────────────────────────────────────
 
 /**
  * Fetch a real market quote.
  * - Indian symbols → Upstox provider (NO web search, NO LLM).
- * - US symbols → returns NOT_CONFIGURED (not implemented in this phase).
+ * - US symbols → Twelve Data provider (NO web search, NO LLM).
  */
 export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQuote> | MarketDataError> {
   const upper = symbol.toUpperCase();
 
+  // Indian symbols → Upstox
   if (isIndianSymbol(upper)) {
     const result = await upstoxProvider.getQuote(upper);
     if (isMarketDataError(result)) return result;
@@ -57,10 +83,22 @@ export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQ
     };
   }
 
-  // US market data is not handled in Phase 2
+  // US symbols → Twelve Data
+  if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
+    const result = await twelveDataProvider.getQuote(upper);
+    if (isMarketDataError(result)) return result;
+
+    return {
+      data: result,
+      source: 'twelvedata',
+      dataStatus: result.marketStatus === 'OPEN' ? 'LIVE' : 'HISTORICAL',
+      timestamp: result.timestamp,
+    };
+  }
+
   return {
     code: 'NOT_CONFIGURED',
-    message: `US market data is not yet connected for ${upper}`,
+    message: `No market data provider configured for ${upper}`,
     symbol: upper,
     provider: 'none',
   };
@@ -71,7 +109,7 @@ export async function fetchQuote(symbol: string): Promise<ProviderResult<MarketQ
 /**
  * Fetch historical OHLCV candles.
  * - Indian symbols → Upstox Historical Candle API (NO web search, NO LLM, NO fabrication).
- * - US symbols → returns NOT_CONFIGURED.
+ * - US symbols → Twelve Data Time Series API (NO web search, NO LLM, NO fabrication).
  */
 export async function fetchOHLCV(
   symbol: string,
@@ -79,6 +117,7 @@ export async function fetchOHLCV(
 ): Promise<ProviderResult<OHLCVCandle[]> | MarketDataError> {
   const upper = symbol.toUpperCase();
 
+  // Indian symbols → Upstox
   if (isIndianSymbol(upper)) {
     const result = await upstoxProvider.getHistoricalOHLCV(upper, days);
     if (isMarketDataError(result)) return result;
@@ -91,10 +130,46 @@ export async function fetchOHLCV(
     };
   }
 
+  // US symbols → Twelve Data
+  if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
+    const result = await twelveDataProvider.getHistoricalOHLCV(upper, days);
+    if (isMarketDataError(result)) return result;
+
+    return {
+      data: result,
+      source: 'twelvedata',
+      dataStatus: 'HISTORICAL',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   return {
     code: 'NOT_CONFIGURED',
-    message: `US market data is not yet connected for ${upper}`,
+    message: `No market data provider configured for ${upper}`,
     symbol: upper,
     provider: 'none',
   };
+}
+
+// ── Symbol Search ────────────────────────────────────────────────
+
+/**
+ * Search for symbols using provider's search endpoint.
+ * Falls back to local mapping if provider is unavailable.
+ */
+export async function searchSymbolsProvider(query: string): Promise<SymbolSearchResult[] | MarketDataError> {
+  // Try Twelve Data symbol search
+  const tdResult = await tdSearchSymbols(query);
+  if (!isMarketDataError(tdResult)) {
+    return tdResult.map(r => ({
+      symbol: r.symbol,
+      name: r.name,
+      exchange: r.exchange,
+      type: r.type,
+      currency: r.currency,
+    }));
+  }
+
+  // If provider search fails, return the error
+  return tdResult;
 }

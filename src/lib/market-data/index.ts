@@ -9,6 +9,7 @@ export type {
   ProviderResult,
   MarketDataError,
   MarketDataProvider,
+  SymbolSearchResult,
 } from './types';
 
 export {
@@ -26,6 +27,17 @@ export {
   fetchQuote,
   fetchOHLCV,
   isMarketDataError,
+  getSymbolMarket,
+  searchSymbolsProvider,
 } from './market-service';
 
 export { upstoxProvider } from './upstox-provider';
+
+export {
+  twelveDataProvider,
+  isUSSymbol,
+  getUSSymbolMapping,
+  mapInterval,
+  searchSymbols,
+  type TDSymbolSearchResult,
+} from './twelve-data-provider';

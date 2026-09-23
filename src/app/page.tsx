@@ -209,7 +209,7 @@ export default function Home() {
           <span className="flex items-center gap-1">
             {effectiveLive ? (
               <>
-                {hasWsLive ? 'Real-time via Upstox WebSocket' : 'Real-time via Upstox REST'}
+                {hasWsLive ? 'Real-time via Upstox WebSocket' : 'Real-time via Market APIs'}
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1 animate-pulse" />
               </>
             ) : (

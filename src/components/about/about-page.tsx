@@ -88,7 +88,7 @@ const TECH_STACK = [
 
 // ─── Features list ────────────────────────────────────────────────────────────
 const FEATURES = [
-  'Real-time stock quotes via Web Search + LLM Analysis',
+  'Real-time stock quotes via Market Data APIs (Upstox, Twelve Data)',
   'AI-powered price predictions using GPT-class LLM',
   'Comprehensive technical analysis with 15+ indicators',
   'News sentiment analysis powered by LLM',
@@ -179,7 +179,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Brain}
                 title="AI Engine"
-                items={['GPT-class LLM for Predictions', 'GPT-class LLM for Sentiment Analysis', '15+ Technical Indicator Features', 'Real-time Web Search Data', 'Conversational AI Assistant']}
+                items={['GPT-class LLM for Predictions', 'GPT-class LLM for Sentiment Analysis', '15+ Technical Indicator Features', 'Real-time Market Data APIs', 'Conversational AI Assistant']}
                 color="border-l-cyan-500"
                 delay={0.2}
               />
@@ -193,7 +193,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Database}
                 title="Data Sources"
-                items={['Real-time via Web Search + LLM Analysis', 'Historical OHLCV Data via AI SDK', 'Real-time Market Feeds', 'News Aggregation via Web Search', 'Economic Indicators']}
+                items={['Real-time via Upstox & Twelve Data APIs', 'Historical OHLCV via Market Data APIs', 'Real-time Market Feeds', 'News Aggregation via Web Search', 'Economic Indicators']}
                 color="border-l-emerald-500"
                 delay={0.3}
               />
@@ -264,7 +264,7 @@ export function AboutPage() {
                   </div>
                   <div className="flex justify-between">
                     <span>News Sources</span>
-                    <span className="text-white font-medium">Web Search (real-time)</span>
+                    <span className="text-white font-medium">Market Data APIs (real-time)</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Update Frequency</span>

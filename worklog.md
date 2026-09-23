@@ -216,3 +216,39 @@ Stage Summary:
 - Frontend integration code complete (hook, store, pages)
 - Market closed during verification (CLOSING_END) — initial_feed received, no live ticks expected
 - Infrastructure ready for live tick reception when NSE market opens
+---
+Task ID: 2A
+Agent: main
+Task: Phase 2A — Replace Web Search + LLM market data with real market data providers
+
+Work Log:
+- Inspected entire codebase: ai-service.ts, stock-utils.ts, market-data/*, API routes, UI components
+- Found Indian stocks already use Upstox V2 REST (Phase 2 complete), but US stocks still use Web Search + LLM extraction
+- Created Twelve Data provider (twelve-data-provider.ts) with getQuote, getHistoricalOHLCV, searchSymbols
+- Added US symbol mapping (AAPL, MSFT, TSLA, NVDA, GOOG, META, AMZN, etc.)
+- Updated market-service.ts to route: Indian→Upstox, US→Twelve Data
+- Updated types.ts with SymbolSearchResult type
+- Updated index.ts exports
+- Replaced fetchRealStockQuote US path: web search + LLM → Twelve Data provider
+- Replaced fetchHistoricalOHLCV US path: Yahoo scraping + LLM → Twelve Data provider
+- Deleted fetchHistoricalOHLCVUS function entirely
+- Updated /api/stock to use market-service for ALL symbols (not just Indian)
+- Updated /api/market-overview to use real provider quotes instead of web search
+- Updated /api/search to use Twelve Data symbol search + real quote provider
+- Updated About page: removed "Web AI" and "LLM" references for market data
+- Updated footer: "Real-time via Market APIs" instead of "Real-time via Upstox REST"
+- Added TWELVE_DATA_API_KEY to .env
+- Fixed TypeScript errors in stock/route.ts, search/route.ts, ai-service.ts, upstox-provider.ts
+- Ran lint: PASS
+- Ran TypeScript check: only pre-existing ZAI SDK type errors remain
+- Audited for fake data: no Math.random in market data, no hardcoded prices, no mock data
+- Verified no secrets exposed in browser (Bearer, tokens, JWT, API keys all absent)
+- Tested API endpoints with missing API key: correct NOT_CONFIGURED behavior, no fake data
+
+Stage Summary:
+- Two real market data providers integrated: Upstox (Indian) + Twelve Data (US)
+- Complete elimination of LLM/web-search for market prices and OHLCV
+- Provider abstraction with type-safe routing
+- All API endpoints return truthful responses with source/timestamp/status metadata
+- Security verified: no credentials exposed to browser
+- TWELVE_DATA_API_KEY must be configured for US market data to work

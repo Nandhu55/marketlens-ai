@@ -149,7 +149,7 @@ export const upstoxProvider: MarketDataProvider = {
         high: num(ohlc.high, -1) >= 0 ? ohlc.high : undefined,
         low: num(ohlc.low, -1) >= 0 ? ohlc.low : undefined,
         previousClose: previousClose > 0 ? previousClose : undefined,
-        volume: num(entry.volume, -1) >= 0 ? entry.volume : undefined,
+        volume: num(entry.volume, -1) >= 0 ? num(entry.volume) : undefined,
         change,
         changePercent,
         timestamp: String(entry.timestamp || new Date().toISOString()),

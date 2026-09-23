@@ -1,11 +1,17 @@
 import { NextResponse } from 'next/server';
-import { fetchRealStockQuote } from '@/lib/ai-service';
 import { KNOWN_SYMBOLS } from '@/lib/stock-utils';
-import { getAllIndianSymbols } from '@/lib/market-data';
+import {
+  getAllIndianSymbols,
+  isIndianSymbol,
+  searchSymbolsProvider,
+  isMarketDataError,
+  fetchQuote,
+  isUSSymbol,
+} from '@/lib/market-data';
 
 /** Merge US KNOWN_SYMBOLS with Indian symbols for unified search. */
 function getAllSymbols(): Array<{ symbol: string; name: string; sector: string; exchange: string; market?: string }> {
-  const us = KNOWN_SYMBOLS.map(s => ({ ...s, market: 'US' }));
+  const us = KNOWN_SYMBOLS.filter(s => !isIndianSymbol(s.symbol)).map(s => ({ ...s, market: 'US' }));
   const indian = getAllIndianSymbols().map(s => ({
     symbol: s.symbol,
     name: s.name,
@@ -31,30 +37,72 @@ export async function GET(request: Request) {
   const localMatches = allSymbols
     .filter(
       (s) =>
-        s.symbol.toLowerCase().includes(upper) ||
-        s.name.toLowerCase().includes(upper)
+        s.symbol.toUpperCase().includes(upper) ||
+        s.name.toUpperCase().includes(upper)
     )
     .slice(0, 10);
 
-  // Try to fetch real prices for matched symbols
+  // Try provider symbol search (Twelve Data) for additional results
+  let providerMatches: Array<{ symbol: string; name: string; exchange?: string; type?: string; market?: string }> = [];
+  const providerResult = await searchSymbolsProvider(query);
+  if (!isMarketDataError(providerResult) && providerResult.length > 0) {
+    providerMatches = providerResult
+      .filter(r => r.type === 'Common Stock' || r.type === 'ETF' || r.type === 'Index' || !r.type)
+      .filter(r => !localMatches.some(l => l.symbol.toUpperCase() === r.symbol.toUpperCase()))
+      .slice(0, 5)
+      .map(r => ({
+        symbol: r.symbol,
+        name: r.name,
+        exchange: r.exchange,
+        type: r.type,
+        market: 'US' as const,
+      }));
+  }
+
+  // Merge local + provider results (dedup by symbol)
+  // Normalize to a common shape with sector always present
+  const allMatches: Array<{ symbol: string; name: string; sector: string; exchange: string; market?: string }> = [
+    ...localMatches,
+    ...providerMatches.map(p => ({ symbol: p.symbol, name: p.name, sector: '', exchange: p.exchange || '', market: p.market })),
+  ];
+
+  // Fetch real prices for matched symbols
   const enriched = await Promise.all(
-    localMatches.map(async (s) => {
+    allMatches.map(async (s) => {
       try {
-        const quote = await fetchRealStockQuote(s.symbol);
+        const quoteResult = await fetchQuote(s.symbol);
+        if (isMarketDataError(quoteResult)) {
+          return {
+            symbol: s.symbol,
+            name: s.name,
+            sector: s.sector || '',
+            exchange: s.exchange || '',
+            market: s.market,
+            price: 0,
+            change: 0,
+            changePercent: 0,
+            hasRealPrice: false,
+          };
+        }
+        const mq = quoteResult.data;
         return {
           symbol: s.symbol,
           name: s.name,
-          sector: s.sector,
-          exchange: s.exchange,
-          market: s.market,
-          price: quote?.price || 0,
-          change: quote?.change || 0,
-          changePercent: quote?.changePercent || 0,
-          hasRealPrice: !!quote,
+          sector: s.sector || '',
+          exchange: s.exchange || mq.exchange,
+          market: s.market || (isIndianSymbol(s.symbol) ? 'IN' : 'US'),
+          price: mq.price,
+          change: mq.change || 0,
+          changePercent: mq.changePercent || 0,
+          hasRealPrice: true,
         };
       } catch {
         return {
-          ...s,
+          symbol: s.symbol,
+          name: s.name,
+          sector: s.sector || '',
+          exchange: s.exchange || '',
+          market: s.market,
           price: 0,
           change: 0,
           changePercent: 0,
