@@ -36,3 +36,32 @@ Stage Summary:
 - No fake data, no Math.random for market data
 - Lint passes clean
 - Browser loads without errors
+---
+Task ID: 2B-FINAL
+Agent: main
+Task: Phase 2B Final Live Verification + Caddy Fix
+
+Work Log:
+- Verified .env.local with API keys (UPSTOX_ANALYTICS_TOKEN and FINNHUB_API_KEY both configured)
+- Copied uploaded .env.local to project root
+- Verified Caddy routing: XTransformPort=3003 and XTransformPort=3004 both work when streamers are running
+- Tested India REST: RELIANCE ₹1158.9, TCS ₹2125, INFY ₹1020, NIFTY ₹22363.35, BANKNIFTY ₹54918 — all source=upstox, providerStatus=CONNECTED
+- Tested USA REST: AAPL $339.59, MSFT $539.98, NVDA $226.48, TSLA $379.22 — all source=finnhub, providerStatus=CONNECTED
+- Tested India WebSocket: Connected to price-streamer, received initial ticks from Upstox (BANKNIFTY, TCS, NIFTY, RELIANCE), all src=upstox
+- Tested US WebSocket: Connected to us-streamer, received initial ticks from Finnhub (MSFT, AAPL, NVDA, META, AMZN, TSLA, GOOG), plus LIVE ticks (META $748.5 src=finnhub)
+- Verified Caddy proxy: Socket.IO handshake through Caddy works for both XTransformPort=3003 and XTransformPort=3004
+- Verified full pipeline: Upstox WS → protobuf → Socket.IO → Caddy → client ✅ and Finnhub WS → trades → Socket.IO → Caddy → client ✅
+- Cleaned up all Twelve Data references (removed twelve-data-provider.ts, updated comments in 6 files)
+- Ran lint: PASS (zero errors)
+- Verified no fake data: PASS (Math.random only in cosmetic GUID/skeleton, never in market prices)
+- Verified provider routing: PASS (Indian→Upstox, US→Finnhub, all 5 checks pass)
+- Verified API key security: PASS (no NEXT_PUBLIC_ prefix, no client-side exposure, no React prop leakage)
+
+Stage Summary:
+- All REST APIs verified with real prices from both providers
+- All WebSocket pipelines verified end-to-end with real live ticks
+- Caddy routing verified for both XTransformPort=3003 and XTransformPort=3004
+- Twelve Data fully removed from codebase
+- No fake/mock/simulated market data found
+- API keys secured server-side only
+- Lint passes clean

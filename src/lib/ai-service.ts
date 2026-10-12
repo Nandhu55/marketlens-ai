@@ -4,7 +4,7 @@
 //
 // Market data (quotes, OHLCV) is handled by @/lib/market-data:
 //   - Indian symbols → Upstox provider (V2 REST API)
-//   - US symbols → Twelve Data provider (REST API)
+//   - US symbols → Finnhub provider (REST API)
 //   NO web search or LLM is used for market prices or OHLCV.
 //
 // This file handles: web search (non-market), page reading, LLM chat,
@@ -227,7 +227,7 @@ export async function fetchRealStockQuote(symbol: string): Promise<RealStockQuot
     }
   }
 
-  // ── US symbols: Twelve Data provider (NO web search, NO LLM) ──
+  // ── US symbols: Finnhub provider (NO web search, NO LLM) ──
   if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
     try {
       const result = await fetchQuote(upper);
@@ -273,7 +273,7 @@ export async function fetchRealStockQuote(symbol: string): Promise<RealStockQuot
 
 // ── Real Historical OHLCV Data Fetching ─────────────────────────
 // Indian symbols: Upstox Historical Candle API (NO web search, NO LLM, NO fabrication).
-// US symbols: Twelve Data Time Series API (NO web search, NO LLM, NO fabrication).
+// US symbols: Finnhub Stock Candle API (NO web search, NO LLM, NO fabrication).
 
 export async function fetchHistoricalOHLCV(
   symbol: string,
@@ -305,7 +305,7 @@ export async function fetchHistoricalOHLCV(
     }
   }
 
-  // ── US symbols: Twelve Data provider ──
+  // ── US symbols: Finnhub provider ──
   if (isUSSymbol(upper) || !isIndianSymbol(upper)) {
     try {
       const result = await fetchOHLCV(upper, days);

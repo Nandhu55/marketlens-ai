@@ -12,7 +12,7 @@ import { getCompanyName } from '@/lib/stock-utils';
 
 /**
  * Fetch quotes for a list of symbols using the market-data providers.
- * Indian → Upstox, US → Twelve Data.
+ * Indian → Upstox, US → Finnhub.
  * If a symbol fails, it is omitted — other symbols still succeed.
  */
 async function fetchQuotesFromProviders(symbols: string[]) {

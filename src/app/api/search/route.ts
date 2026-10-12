@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     )
     .slice(0, 10);
 
-  // Try provider symbol search (Twelve Data) for additional results
+  // Try provider symbol search (Finnhub) for additional results
   let providerMatches: Array<{ symbol: string; name: string; exchange?: string; type?: string; market?: string }> = [];
   const providerResult = await searchSymbolsProvider(query);
   if (!isMarketDataError(providerResult) && providerResult.length > 0) {

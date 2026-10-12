@@ -66,7 +66,7 @@ export type SymbolSearchResult = {
   currency?: string;
 };
 
-/** Market-data provider interface — allows future providers (Twelve Data, etc.). */
+/** Market-data provider interface — allows future providers (Finnhub, etc.). */
 export type MarketDataProvider = {
   readonly name: string;
   readonly supportedMarkets: ('IN' | 'US')[];

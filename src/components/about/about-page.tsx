@@ -88,7 +88,7 @@ const TECH_STACK = [
 
 // ─── Features list ────────────────────────────────────────────────────────────
 const FEATURES = [
-  'Real-time stock quotes via Market Data APIs (Upstox, Twelve Data)',
+  'Real-time stock quotes via Market Data APIs (Upstox, Finnhub)',
   'AI-powered price predictions using GPT-class LLM',
   'Comprehensive technical analysis with 15+ indicators',
   'News sentiment analysis powered by LLM',
@@ -193,7 +193,7 @@ export function AboutPage() {
               <ArchBox
                 icon={Database}
                 title="Data Sources"
-                items={['Real-time via Upstox & Twelve Data APIs', 'Historical OHLCV via Market Data APIs', 'Real-time Market Feeds', 'News Aggregation via Web Search', 'Economic Indicators']}
+                items={['Real-time via Upstox & Finnhub APIs', 'Historical OHLCV via Market Data APIs', 'Real-time Market Feeds', 'News Aggregation via Web Search', 'Economic Indicators']}
                 color="border-l-emerald-500"
                 delay={0.3}
               />

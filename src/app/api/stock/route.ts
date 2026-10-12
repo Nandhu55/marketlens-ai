@@ -23,7 +23,7 @@ export async function GET(request: Request) {
 
   try {
     // ── All symbols: use market-service for truthful metadata ──
-    // Indian → Upstox, US → Twelve Data, Unknown → Twelve Data
+    // Indian → Upstox, US → Finnhub, Unknown → Finnhub
     const market = getSymbolMarket(stockKey);
     const [quoteResult, ohlcvResult] = await Promise.all([
       fetchQuote(stockKey),
