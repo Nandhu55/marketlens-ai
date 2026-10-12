@@ -1,0 +1,40 @@
+
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": ".",
+      "framework": "nextjs"
+    },
+    "price-streamer": {
+      "root": "mini-services/price-streamer",
+      "runtime": "node",
+      "entrypoint": "server.js"
+    },
+    "us-streamer": {
+      "root": "mini-services/us-streamer",
+      "runtime": "node",
+      "entrypoint": "server.js"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/india-streamer/(.*)",
+      "destination": {
+        "service": "price-streamer"
+      }
+    },
+    {
+      "source": "/us-streamer/(.*)",
+      "destination": {
+        "service": "us-streamer"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ]
+}
